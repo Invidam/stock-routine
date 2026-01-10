@@ -1,0 +1,25 @@
+# Stock Portfolio Routine - Requirements
+# Python 3.10+
+
+# YAML 파싱
+PyYAML>=6.0.1
+
+# 데이터 분석
+pandas>=2.0.0
+
+# 금융 데이터 수집
+yfinance>=0.2.38
+
+# 시각화
+matplotlib>=3.7.0
+
+# 웹 대시보드
+streamlit>=1.28.0
+plotly>=5.18.0
+
+# Optional: Telegram bot integration (향후 사용)
+# python-telegram-bot>=20.0
+
+# Optional: LLM API integration (향후 사용)
+# google-generativeai>=0.3.0
+streamlit-hotkeys

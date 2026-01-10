@@ -1,0 +1,47 @@
+# 민감한 데이터 파일
+monthly/*.yaml
+monthly/*.yml
+!monthly/example-*.yaml
+!monthly/example-*.yml
+!monthly/README.md
+portfolio.db
+stock_data.db
+
+# 생성된 차트 파일
+charts/*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 가상환경
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 개인 파일
+memo
+todo.txt
+
+# 로그
+logs/
+*.log
+
+# 기타
+*.tmp
+.cache/
+.pytest_cache/
+.ipynb_checkpoints
+.env
+.env.local
