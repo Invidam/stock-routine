@@ -3,10 +3,15 @@
 """
 import sqlite3
 from typing import List, Dict, Optional, Tuple
+from pathlib import Path
 import pandas as pd
 import streamlit as st
+import yaml
 from streamlit_app.config import CACHE_TTL, DB_PATH
 from streamlit_app.utils.formatters import get_previous_month
+
+# YAML 파일 경로
+MONTHLY_DIR = Path(__file__).parent.parent / "monthly"
 
 
 # ===== 기본 데이터 조회 =====
@@ -771,32 +776,27 @@ def get_total_sectors(year_month: str, top_n: int = 10, db_path: str = DB_PATH) 
 @st.cache_data(ttl=CACHE_TTL['monthly_data'])
 def get_total_top_holdings(year_month: str, top_n: int = 20, db_path: str = DB_PATH) -> pd.DataFrame:
     """
-    통합 보유 종목 Top N
+    통합 보유 종목 Top N (현재 평가액 기준)
 
     Returns:
-        DataFrame with columns: ['종목', '유형', 'amount', 'percent', '출처']
+        DataFrame with columns: ['종목', '유형', '투자원금', '평가금액', 'percent', '수익률']
     """
+    from streamlit_app.utils.price_fetcher import get_multiple_prices, get_current_price
+
     conn = sqlite3.connect(db_path)
 
-    # "전체 기간"인 경우 purchase_history에서 직접 매수 종목만 조회
-    # (ETF 내부 종목은 시간에 따라 변하므로 전체 기간에서는 의미 없음)
+    # purchase_history에서 직접 매수한 종목의 수량 조회
     if year_month == "전체 기간":
         query = """
             SELECT
-                ticker as 종목,
-                asset_type as 유형,
-                SUM(input_amount) as amount,
-                SUM(input_amount) * 100.0 / (
-                    SELECT SUM(input_amount)
-                    FROM purchase_history
-                ) as percent,
-                '직접매수' as 출처
+                ticker,
+                asset_type,
+                SUM(quantity) as total_quantity,
+                SUM(input_amount) as invested
             FROM purchase_history
             GROUP BY ticker, asset_type
-            ORDER BY amount DESC
-            LIMIT ?
         """
-        df = pd.read_sql_query(query, conn, params=(top_n,))
+        df = pd.read_sql_query(query, conn)
     else:
         month_id = get_month_id(year_month, db_path)
         if not month_id:
@@ -805,38 +805,105 @@ def get_total_top_holdings(year_month: str, top_n: int = 20, db_path: str = DB_P
 
         query = """
             SELECT
-                CASE
-                    WHEN stock_name IS NOT NULL AND stock_name != '' THEN stock_name
-                    ELSE stock_symbol
-                END as 종목,
-                asset_type as 유형,
-                SUM(my_amount) as amount,
-                SUM(my_amount) * 100.0 / (
-                    SELECT SUM(my_amount)
-                    FROM analyzed_holdings
-                    WHERE month_id = ? AND account_id IS NULL
-                ) as percent,
-                GROUP_CONCAT(DISTINCT source_ticker) as 출처
-            FROM analyzed_holdings
-            WHERE month_id = ? AND account_id IS NULL
-            GROUP BY
-                CASE
-                    WHEN stock_name IS NOT NULL AND stock_name != '' THEN stock_name
-                    ELSE stock_symbol
-                END,
-                asset_type
-            ORDER BY
-                CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,
-                amount DESC
-            LIMIT ?
+                ph.ticker,
+                ph.asset_type,
+                SUM(ph.quantity) as total_quantity,
+                SUM(ph.input_amount) as invested
+            FROM purchase_history ph
+            JOIN accounts a ON ph.account_id = a.id
+            WHERE a.month_id = ?
+            GROUP BY ph.ticker, ph.asset_type
         """
-        df = pd.read_sql_query(query, conn, params=(month_id, month_id, top_n))
+        df = pd.read_sql_query(query, conn, params=(month_id,))
 
-        # OTHER 제외
-        df = df[df['종목'] != 'OTHER']
+    # CASH 추가
+    if year_month == "전체 기간":
+        latest_month = get_latest_month(db_path)
+        latest_month_id = get_month_id(latest_month, db_path) if latest_month else None
+        if latest_month_id:
+            query_cash = """
+                SELECT
+                    h.name as ticker,
+                    'CASH' as asset_type,
+                    0.0 as total_quantity,
+                    SUM(h.amount) as invested
+                FROM holdings h
+                JOIN accounts a ON h.account_id = a.id
+                WHERE a.month_id = ? AND h.asset_type = 'CASH'
+                GROUP BY h.name
+            """
+            df_cash = pd.read_sql_query(query_cash, conn, params=(latest_month_id,))
+            df = pd.concat([df, df_cash], ignore_index=True)
+    else:
+        query_cash = """
+            SELECT
+                h.name as ticker,
+                'CASH' as asset_type,
+                0.0 as total_quantity,
+                SUM(h.amount) as invested
+            FROM holdings h
+            JOIN accounts a ON h.account_id = a.id
+            WHERE a.month_id = ? AND h.asset_type = 'CASH'
+            GROUP BY h.name
+        """
+        df_cash = pd.read_sql_query(query_cash, conn, params=(month_id,))
+        df = pd.concat([df, df_cash], ignore_index=True)
 
     conn.close()
-    return df
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # 현재가 조회
+    stock_bond_tickers = df[df['asset_type'].isin(['STOCK', 'BOND'])]['ticker'].unique().tolist()
+    current_prices = get_multiple_prices(stock_bond_tickers) if stock_bond_tickers else {}
+
+    # 환율 조회
+    exchange_rate = get_current_price('KRW=X')
+    if not exchange_rate or exchange_rate <= 0:
+        exchange_rate = 1400
+
+    # 평가금액 계산
+    def calc_current_value(row):
+        if row['asset_type'] == 'CASH':
+            return row['invested']  # CASH는 원금 그대로
+
+        ticker = row['ticker']
+        quantity = row['total_quantity']
+        price_usd = current_prices.get(ticker, 0)
+
+        if price_usd and price_usd > 0 and quantity > 0:
+            if ticker.endswith('.KS') or ticker.endswith('.KQ'):
+                return round(quantity * price_usd)
+            else:
+                return round(quantity * price_usd * exchange_rate)
+        return row['invested']  # 현재가 조회 실패 시 원금
+
+    df['current_value'] = df.apply(calc_current_value, axis=1)
+
+    # 수익률 계산
+    df['return_rate'] = df.apply(
+        lambda row: round((row['current_value'] - row['invested']) / row['invested'] * 100, 1)
+                    if row['invested'] > 0 else 0,
+        axis=1
+    )
+
+    # 비중 계산 (평가금액 기준)
+    total_value = df['current_value'].sum()
+    df['percent'] = (df['current_value'] / total_value * 100).round(1) if total_value > 0 else 0
+
+    # 정렬 (평가금액 내림차순)
+    df = df.sort_values('current_value', ascending=False).head(top_n)
+
+    # 컬럼명 변경
+    result = df.rename(columns={
+        'ticker': '종목',
+        'asset_type': '유형',
+        'invested': '투자원금',
+        'current_value': '평가금액'
+    })[['종목', '유형', '투자원금', '평가금액', 'percent', 'return_rate']]
+
+    return result
 
 
 @st.cache_data(ttl=CACHE_TTL['monthly_data'])
@@ -1142,5 +1209,154 @@ def get_monthly_holdings_comparison(year_month: str, db_path: str = DB_PATH) -> 
         '보유수량', '평균매입가', '현재가',
         '평가금액', '수익금액', '수익률(%)'
     ]].copy()
+
+    return result
+
+
+# ===== YAML 기반 월별 비교 =====
+
+def load_yaml_data(year_month: str) -> Optional[Dict]:
+    """
+    YAML 파일에서 월별 데이터 로드
+
+    Args:
+        year_month: 'YYYY-MM' 형식
+
+    Returns:
+        YAML 데이터 딕셔너리 또는 None
+    """
+    yaml_path = MONTHLY_DIR / f"{year_month}.yaml"
+    if not yaml_path.exists():
+        return None
+
+    with open(yaml_path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+def get_yaml_available_months() -> List[str]:
+    """
+    YAML 파일이 있는 월 목록 조회 (내림차순)
+
+    Returns:
+        ['2025-12', '2025-11', ...]
+    """
+    yaml_files = list(MONTHLY_DIR.glob("*.yaml"))
+
+    months = []
+    for f in yaml_files:
+        # example- 로 시작하는 파일 제외
+        if f.stem.startswith("example"):
+            continue
+        months.append(f.stem)
+
+    return sorted(months, reverse=True)
+
+
+def compare_months_yaml(prev_month: str, curr_month: str) -> Dict:
+    """
+    두 달의 YAML 데이터를 비교하여 변경사항 반환
+
+    Args:
+        prev_month: 이전 월 (YYYY-MM)
+        curr_month: 현재 월 (YYYY-MM)
+
+    Returns:
+        {
+            'prev_month': str,
+            'curr_month': str,
+            'added': [{'계좌': str, '종목': str, '티커': str, '금액': int, '유형': str}, ...],
+            'removed': [{'계좌': str, '종목': str, '티커': str, '금액': int, '유형': str}, ...],
+            'changed': [{'계좌': str, '종목': str, '티커': str, '이전금액': int, '현재금액': int, '변화': int, '유형': str}, ...],
+            'summary': {
+                'prev_total': int,
+                'curr_total': int,
+                'added_total': int,
+                'removed_total': int,
+                'changed_total': int
+            }
+        }
+    """
+    prev_data = load_yaml_data(prev_month)
+    curr_data = load_yaml_data(curr_month)
+
+    result = {
+        'prev_month': prev_month,
+        'curr_month': curr_month,
+        'added': [],
+        'removed': [],
+        'changed': [],
+        'summary': {
+            'prev_total': 0,
+            'curr_total': 0,
+            'added_total': 0,
+            'removed_total': 0,
+            'changed_total': 0
+        }
+    }
+
+    # 데이터가 없으면 빈 결과 반환
+    if not prev_data and not curr_data:
+        return result
+
+    # 이전/현재 holdings를 (계좌, 종목명) 키로 딕셔너리화
+    def extract_holdings(data: Optional[Dict]) -> Dict[Tuple[str, str], Dict]:
+        if not data or 'accounts' not in data:
+            return {}
+        holdings_dict = {}
+        for account in data['accounts']:
+            account_name = account['name']
+            for holding in account.get('holdings', []):
+                key = (account_name, holding['name'])
+                holdings_dict[key] = {
+                    '계좌': account_name,
+                    '종목': holding['name'],
+                    '티커': holding.get('ticker_mapping', ''),
+                    '금액': holding.get('amount', 0),
+                    '유형': holding.get('asset_type', 'STOCK')
+                }
+        return holdings_dict
+
+    prev_holdings = extract_holdings(prev_data)
+    curr_holdings = extract_holdings(curr_data)
+
+    prev_keys = set(prev_holdings.keys())
+    curr_keys = set(curr_holdings.keys())
+
+    # 추가된 종목 (현재에만 있음)
+    for key in curr_keys - prev_keys:
+        h = curr_holdings[key]
+        result['added'].append(h)
+        result['summary']['added_total'] += h['금액']
+
+    # 삭제된 종목 (이전에만 있음)
+    for key in prev_keys - curr_keys:
+        h = prev_holdings[key]
+        result['removed'].append(h)
+        result['summary']['removed_total'] += h['금액']
+
+    # 변경된 종목 (양쪽에 있고 금액이 다름)
+    for key in prev_keys & curr_keys:
+        prev_h = prev_holdings[key]
+        curr_h = curr_holdings[key]
+        if prev_h['금액'] != curr_h['금액']:
+            result['changed'].append({
+                '계좌': curr_h['계좌'],
+                '종목': curr_h['종목'],
+                '티커': curr_h['티커'],
+                '이전금액': prev_h['금액'],
+                '현재금액': curr_h['금액'],
+                '변화': curr_h['금액'] - prev_h['금액'],
+                '유형': curr_h['유형']
+            })
+            result['summary']['changed_total'] += curr_h['금액'] - prev_h['금액']
+
+    # 총액 계산
+    result['summary']['prev_total'] = sum(h['금액'] for h in prev_holdings.values())
+    result['summary']['curr_total'] = sum(h['금액'] for h in curr_holdings.values())
+
+    # 정렬 (금액 내림차순)
+    result['added'].sort(key=lambda x: x['금액'], reverse=True)
+    result['removed'].sort(key=lambda x: x['금액'], reverse=True)
+    result['changed'].sort(key=lambda x: abs(x['변화']), reverse=True)
 
     return result

@@ -205,15 +205,16 @@ def render_sector_chart(selected_month: str):
         y_col='sector_name',
         title="📊 통합 섹터 비중 (Top 10)"
     )
-    st.plotly_chart(fig, use_container_width=True, key="sector_bar_chart")
+    st.plotly_chart(fig, width='stretch', key="sector_bar_chart")
 
 
 def render_top_holdings(selected_month: str):
-    """Top 20 Holdings"""
+    """Top 20 Holdings (현재 평가액 기준)"""
 
-    st.subheader("🏅 통합 보유 종목 Top 20")
+    st.subheader("🏅 통합 보유 종목 Top 20 (현재 평가액 기준)")
 
-    df = get_total_top_holdings(selected_month, top_n=20)
+    with st.spinner("현재가 조회 중..."):
+        df = get_total_top_holdings(selected_month, top_n=20)
 
     if df.empty:
         st.info("데이터가 없습니다.")
@@ -221,13 +222,20 @@ def render_top_holdings(selected_month: str):
 
     df_display = df.copy()
     df_display.insert(0, '순위', range(1, len(df) + 1))
-    df_display['금액'] = df_display['amount'].apply(lambda x: f"{x:,}원")
+
+    # 수익금액 계산
+    df_display['수익금액_raw'] = df_display['평가금액'] - df_display['투자원금']
+
+    df_display['투자원금'] = df_display['투자원금'].apply(lambda x: f"{int(x):,}원")
+    df_display['평가금액'] = df_display['평가금액'].apply(lambda x: f"{int(x):,}원")
+    df_display['수익금액'] = df_display['수익금액_raw'].apply(lambda x: f"{int(x):+,}원")
     df_display['비중'] = df_display['percent'].apply(lambda x: f"{x:.1f}%")
+    df_display['수익률'] = df_display['return_rate'].apply(lambda x: f"{x:+.1f}%")
 
     st.dataframe(
-        df_display[['순위', '종목', '유형', '금액', '비중', '출처']],
-        use_container_width=True,
+        df_display[['순위', '종목', '유형', '투자원금', '평가금액', '수익금액', '비중', '수익률']],
+        width='stretch',
         hide_index=True
     )
 
-    st.caption("💡 ETF 내부 종목은 [출처] 컬럼에 ETF 이름이 표시됩니다.")
+    st.caption("💡 평가금액은 현재 시장가 기준으로 계산됩니다. (실시간 조회)")

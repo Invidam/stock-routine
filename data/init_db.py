@@ -106,6 +106,42 @@ def init_database(db_path: str = "portfolio.db"):
             )
         """)
 
+        # 7. purchase_history 테이블 생성 (적립식 투자 매수 이력)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS purchase_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                year_month TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                input_amount INTEGER NOT NULL,
+                purchase_date TEXT NOT NULL,
+                price_at_purchase REAL,
+                currency TEXT DEFAULT 'USD',
+                exchange_rate REAL,
+                account_id INTEGER,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            )
+        """)
+
+        # 8. current_holdings_summary 뷰 생성 (종목별 보유 수량 집계)
+        cursor.execute("""
+            CREATE VIEW IF NOT EXISTS current_holdings_summary AS
+            SELECT
+                ticker,
+                asset_type,
+                SUM(quantity) as total_quantity,
+                SUM(input_amount) as total_invested,
+                CASE
+                    WHEN SUM(quantity) > 0 THEN SUM(input_amount) / SUM(quantity)
+                    ELSE 0
+                END as avg_price
+            FROM purchase_history
+            GROUP BY ticker, asset_type
+        """)
+
         # 인덱스 생성 (조회 성능 향상)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_accounts_month
@@ -176,6 +212,8 @@ def init_database(db_path: str = "portfolio.db"):
         print("   - analyzed_holdings 테이블 생성")
         print("   - analyzed_sectors 테이블 생성")
         print("   - analysis_metadata 테이블 생성")
+        print("   - purchase_history 테이블 생성")
+        print("   - current_holdings_summary 뷰 생성")
         print("   - 인덱스 생성 완료")
 
     except sqlite3.Error as e:

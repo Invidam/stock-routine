@@ -4,10 +4,20 @@
 
 ## 📦 초기 설정 (최초 1회)
 
-### 1. DB 초기화
+### 1. 가상환경 생성 및 의존성 설치
 
 ```bash
-python -m data.init_db
+# 가상환경 생성
+python3 -m venv .venv
+
+# 의존성 설치
+.venv/bin/pip install -r requirements.txt
+```
+
+### 2. DB 초기화
+
+```bash
+.venv/bin/python -m data.init_db
 ```
 
 **출력:**
@@ -20,6 +30,57 @@ python -m data.init_db
    - analyzed_holdings 테이블 생성
    - analyzed_sectors 테이블 생성
 ```
+
+## 🧪 테스트 환경 (Example 데이터)
+
+처음 프로젝트를 받았을 때, example 데이터로 시스템이 정상 작동하는지 테스트할 수 있습니다.
+
+### 테스트 실행
+
+```bash
+# 1. example 파일을 일반 형식으로 복사
+cp monthly/example-2025-01.yaml monthly/2025-01.yaml
+
+# 2. 테스트 데이터로 전체 파이프라인 실행
+PYTHONPATH=. .venv/bin/python scripts/run_monthly.py --month 2025-01 --yaml monthly/2025-01.yaml
+
+# 3. Streamlit 앱 실행
+.venv/bin/streamlit run app.py
+# 브라우저에서 http://localhost:8501 접속
+```
+
+### 테스트 데이터 삭제
+
+테스트 후 실제 데이터로 전환하려면 테스트 데이터를 삭제해야 합니다.
+
+**방법 1: 전체 초기화 (권장)**
+```bash
+# 테스트용 YAML 파일 삭제
+rm monthly/2025-01.yaml
+
+# DB 삭제 후 재초기화
+rm portfolio.db
+.venv/bin/python -m data.init_db
+
+# 생성된 차트 삭제
+rm -rf charts/*
+```
+
+**방법 2: 특정 월만 삭제**
+```bash
+# DB에서 특정 월 데이터만 삭제
+sqlite3 portfolio.db "DELETE FROM months WHERE year_month = '2025-01';"
+
+# 테스트용 YAML 파일 삭제
+rm monthly/2025-01.yaml
+
+# 해당 월 차트 삭제
+rm charts/2025-01_*.png
+```
+
+> **참고**: `monthly/example-2025-01.yaml`은 Git에 포함된 예시 파일이므로 삭제하지 마세요.
+
+---
 
 ## 📅 월별 루틴 (매월 실행)
 
