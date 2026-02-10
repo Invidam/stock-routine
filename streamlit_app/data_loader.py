@@ -907,6 +907,76 @@ def get_total_top_holdings(year_month: str, top_n: int = 20, db_path: str = DB_P
 
 
 @st.cache_data(ttl=CACHE_TTL['monthly_data'])
+def get_total_lookthrough_holdings(year_month: str, top_n: int = 50, db_path: str = DB_PATH) -> pd.DataFrame:
+    """
+    전체 포트폴리오 ETF 투시 보유 종목 Top N
+
+    analyzed_holdings 테이블에서 account_id IS NULL (통합) 데이터를 조회하여
+    ETF를 구성종목으로 풀어서 보여준다.
+
+    Returns:
+        DataFrame with columns: ['종목', '유형', '비중(%)', '평가금액', '출처 ETF']
+    """
+    if year_month == "전체 기간":
+        year_month = get_latest_month(db_path)
+        if not year_month:
+            return pd.DataFrame()
+
+    month_id = get_month_id(year_month, db_path)
+    if not month_id:
+        return pd.DataFrame()
+
+    conn = sqlite3.connect(db_path)
+
+    query = """
+        SELECT
+            stock_symbol,
+            MAX(stock_name) as stock_name,
+            asset_type as 유형,
+            GROUP_CONCAT(DISTINCT source_ticker) as '출처 ETF',
+            SUM(my_amount) as amount
+        FROM analyzed_holdings
+        WHERE month_id = ? AND account_id IS NULL
+        GROUP BY stock_symbol, asset_type
+        ORDER BY
+            CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,
+            amount DESC
+        LIMIT ?
+    """
+
+    df = pd.read_sql_query(query, conn, params=(month_id, top_n))
+
+    if not df.empty:
+        # 종목명 표시: 한국 주식은 이름(티커), OTHER는 이름, 나머지는 티커
+        def format_name(row):
+            sym = row['stock_symbol']
+            name = row['stock_name']
+            if sym == 'OTHER':
+                return name
+            if sym.endswith('.KS') or sym.endswith('.KQ'):
+                return f"{name} ({sym})"
+            return sym
+        df['종목'] = df.apply(format_name, axis=1)
+
+    conn.close()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    total = df['amount'].sum()
+    df['비중(%)'] = (df['amount'] / total * 100).round(1) if total > 0 else 0
+
+    # CASH 항목 추가 (analyzed_holdings에 없을 수 있으므로)
+    # -> analyzed_holdings에 CASH가 이미 포함되어 있으면 별도 처리 불필요
+
+    result = df[['종목', '유형', '비중(%)', 'amount', '출처 ETF']].rename(
+        columns={'amount': '평가금액'}
+    )
+
+    return result
+
+
+@st.cache_data(ttl=CACHE_TTL['monthly_data'])
 def get_hierarchical_portfolio_data(year_month: str, db_path: str = DB_PATH) -> pd.DataFrame:
     """
     Sunburst 차트용 계층 데이터
