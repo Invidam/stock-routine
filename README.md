@@ -122,6 +122,26 @@ stock-routine/
 └── requirements.txt                   # 의존성 목록
 ```
 
+## 🔄 파이프라인 요약 (run_monthly.py 실행 시)
+
+`run_monthly.py`를 실행하면 아래 4단계가 순서대로 실행되며, 각 단계에서 다른 DB 테이블에 데이터가 저장됩니다.
+
+| 순서 | 스크립트 | 역할 | DB 반영 테이블 | 예시 (SPY 30만원, 2026-01, 26일 기준) |
+|---|---|---|---|---|
+| Step 1 | `import_monthly_data` | YAML 원본 데이터 저장 | `months`, `accounts`, `holdings` | `ticker="SPY"`, `amount=300000`, `asset_type="STOCK"` |
+| Step 2 | `import_monthly_purchases` | 주가 조회 → 수량 계산 | `purchase_history` | `ticker="SPY"`, `quantity=0.3507`, `purchase_date="2026-01-26"` |
+| Step 3 | `analyze_portfolio` | yfinance로 ETF 내부 분석 | `analyzed_holdings`, `analyzed_sectors`, `analysis_metadata` | `source="SPY"` → `symbol="AAPL"`, `my_amount=21000` |
+| Step 4 | `visualize_portfolio` | DB → 차트 이미지 생성 | (DB 변경 없음) | `charts/2026-01_*.png` |
+| 별도 | `evaluate_accumulative` | 전체 수량 합산 → 현재가 평가 | (DB 변경 없음) | SPY 1.0469주 × 현재가 = 917,085원 (+1.9%) |
+
+### 테이블별 역할
+
+| 테이블 | 작성 단계 | 저장 내용 |
+|---|---|---|
+| `holdings` | Step 1 | 사용자 입력 원본 — "SPY에 30만원 넣었다" |
+| `purchase_history` | Step 2 | 수량 기록 — "30만원으로 SPY 0.3507주 샀다" |
+| `analyzed_holdings` | Step 3 | ETF 내부 분석 — "30만원 중 AAPL이 7%, 즉 21,000원" |
+
 ## 📋 데이터베이스 스키마
 
 ### months 테이블
@@ -133,7 +153,7 @@ stock-routine/
 ### holdings 테이블
 - 계좌별 보유 항목 (name, ticker_mapping, amount, target_ratio, asset_type, interest_rate)
 
-### purchase_history 테이블 (NEW)
+### purchase_history 테이블
 - **적립식 투자 매수 이력** (수량 기반 추적)
 - 주요 필드:
   - `ticker`: 종목 코드
@@ -146,7 +166,7 @@ stock-routine/
   - `account_id`: 계좌 ID (FK)
   - `year_month`: 귀속 월 (예: 2025-11-purchase)
 
-### current_holdings_summary 뷰 (NEW)
+### current_holdings_summary 뷰
 - purchase_history를 종목별로 집계한 뷰
 - `ticker`, `total_quantity`, `total_invested`, `avg_price`
 
