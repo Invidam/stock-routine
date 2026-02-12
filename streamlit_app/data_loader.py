@@ -917,34 +917,48 @@ def get_total_lookthrough_holdings(year_month: str, top_n: int = 50, db_path: st
     Returns:
         DataFrame with columns: ['종목', '유형', '비중(%)', '평가금액', '출처 ETF']
     """
-    if year_month == "전체 기간":
-        year_month = get_latest_month(db_path)
-        if not year_month:
-            return pd.DataFrame()
-
-    month_id = get_month_id(year_month, db_path)
-    if not month_id:
-        return pd.DataFrame()
-
     conn = sqlite3.connect(db_path)
 
-    query = """
-        SELECT
-            stock_symbol,
-            MAX(stock_name) as stock_name,
-            asset_type as 유형,
-            GROUP_CONCAT(DISTINCT source_ticker) as '출처 ETF',
-            SUM(my_amount) as amount
-        FROM analyzed_holdings
-        WHERE month_id = ? AND account_id IS NULL
-        GROUP BY stock_symbol, asset_type
-        ORDER BY
-            CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,
-            amount DESC
-        LIMIT ?
-    """
+    if year_month == "전체 기간":
+        # 전체 기간: 모든 월의 투시 데이터를 합산
+        query = """
+            SELECT
+                stock_symbol,
+                MAX(stock_name) as stock_name,
+                asset_type as 유형,
+                GROUP_CONCAT(DISTINCT source_ticker) as '출처 ETF',
+                SUM(my_amount) as amount
+            FROM analyzed_holdings
+            WHERE account_id IS NULL
+            GROUP BY stock_symbol, asset_type
+            ORDER BY
+                CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,
+                amount DESC
+            LIMIT ?
+        """
+        df = pd.read_sql_query(query, conn, params=(top_n,))
+    else:
+        month_id = get_month_id(year_month, db_path)
+        if not month_id:
+            conn.close()
+            return pd.DataFrame()
 
-    df = pd.read_sql_query(query, conn, params=(month_id, top_n))
+        query = """
+            SELECT
+                stock_symbol,
+                MAX(stock_name) as stock_name,
+                asset_type as 유형,
+                GROUP_CONCAT(DISTINCT source_ticker) as '출처 ETF',
+                SUM(my_amount) as amount
+            FROM analyzed_holdings
+            WHERE month_id = ? AND account_id IS NULL
+            GROUP BY stock_symbol, asset_type
+            ORDER BY
+                CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,
+                amount DESC
+            LIMIT ?
+        """
+        df = pd.read_sql_query(query, conn, params=(month_id, top_n))
 
     if not df.empty:
         # 종목명 표시: 한국 주식은 이름(티커), OTHER는 이름, 나머지는 티커
