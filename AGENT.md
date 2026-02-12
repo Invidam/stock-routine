@@ -9,14 +9,45 @@
 ```
 YAML 데이터 작성
     ↓
-data/import_monthly_data.py (YAML → SQLite DB)
+[Step 1] data/import_monthly_data.py (YAML → months, accounts, holdings)
     ↓
-core/analyze_portfolio.py (yfinance → ETF 분석 → DB 저장)
+[Step 2] data/import_monthly_purchases.py (주가 조회 → 수량 계산 → purchase_history)
     ↓
-visualization/visualize_portfolio.py (DB → Matplotlib 차트)
+[Step 3] core/analyze_portfolio.py (yfinance → ETF 분석 → analyzed_holdings, analyzed_sectors)
+    ↓
+[Step 4] visualization/visualize_portfolio.py (DB → Matplotlib 차트)
     ↓
 charts/*.png (최종 출력)
+
+[별도] core/evaluate_accumulative.py (purchase_history 합산 → 현재가 평가)
 ```
+
+### 파이프라인 상세 (run_monthly.py 실행 시)
+
+| 순서 | 스크립트 | 역할 | DB 반영 테이블 | 예시 (SPY 30만원, 2026-01, 26일 기준) |
+|---|---|---|---|---|
+| Step 1 | `import_monthly_data` | YAML 원본 데이터 저장 | `months` | `year_month="2026-01"`, `exchange_rate=1450` |
+| | | | `accounts` | `name="투자(절세)"`, `type="ISA"`, `month_id=1` |
+| | | | `holdings` | `ticker="SPY"`, `amount=300000`, `asset_type="STOCK"` |
+| Step 2 | `import_monthly_purchases` | 주가 조회 → 수량 계산 | `purchase_history` | `ticker="SPY"`, `quantity=0.3507`, `purchase_date="2026-01-26"`, `price_at_purchase=855500`, `currency="USD"`, `exchange_rate=1450` |
+| Step 3 | `analyze_portfolio` | yfinance로 ETF 내부 분석 | `analyzed_holdings` | `source="SPY"`, `symbol="AAPL"`, `my_amount=21000` / `symbol="OTHER"`, `my_amount=130000` |
+| | | | `analyzed_sectors` | `sector="technology"`, `my_amount=96000` / `sector="Cash & Equivalents"`, `my_amount=300000` |
+| | | | `analysis_metadata` | `ticker="SPY"`, `status="success"` |
+| Step 4 | `visualize_portfolio` | DB → 차트 이미지 생성 | (DB 변경 없음) | `charts/2026-01_asset_allocation.png`, `_sectors.png`, `_top_holdings.png`, `asset_trend.png` |
+| 별도 | `evaluate_accumulative` | 전체 수량 합산 → 현재가 평가 | (DB 변경 없음) | SPY 1.0469주 × 현재가 876,000원 = 917,085원, 수익률 +1.9% |
+
+### 테이블별 역할 요약
+
+| 테이블 | 작성 단계 | 저장 내용 |
+|---|---|---|
+| `months` | Step 1 | 월 ID, 환율 |
+| `accounts` | Step 1 | 계좌 정보 (월마다 새로 생성) |
+| `holdings` | Step 1 | 사용자 입력 원본 — "SPY에 30만원 넣었다" |
+| `purchase_history` | Step 2 | 수량 기록 — "30만원으로 SPY 0.3507주 샀다" (수량 불변) |
+| `analyzed_holdings` | Step 3 | ETF 내부 분석 — "30만원 중 AAPL이 7%, 즉 21,000원" |
+| `analyzed_sectors` | Step 3 | 섹터 비중 — "technology 32%, healthcare 13%" |
+| `analysis_metadata` | Step 3 | 분석 상태/에러 기록 |
+| `current_holdings_summary` | (뷰) | purchase_history를 종목별로 자동 집계 |
 
 ### 핵심 컴포넌트
 
@@ -379,8 +410,16 @@ current_holdings_summary (뷰: 종목별 보유 수량 집계) [NEW]
 #### import_monthly_purchases(yaml_path, db_path, purchase_day)
 - 적립식 투자 데이터 임포트 (YAML → purchase_history)
 - **중요**: 기존 YAML 구조(`accounts > holdings`)를 그대로 사용
+- **purchase_day 우선순위**: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
+  - YAML 최상위에 `purchase_day: 18` 지정 시 CLI 파라미터보다 우선 적용
+  - 미지정 시 CLI 파라미터(기본값 26) 사용
 - 핵심 로직:
   ```python
+  # YAML에서 purchase_day 우선 읽기
+  yaml_purchase_day = data.get('purchase_day')
+  if yaml_purchase_day is not None:
+      purchase_day = int(yaml_purchase_day)
+
   # year_month 이중 형식
   file_stem = Path(yaml_path).stem  # "2025-11-purchase"
   year_month_db = file_stem  # DB 조회용
@@ -578,6 +617,15 @@ current_holdings_summary (뷰: 종목별 보유 수량 집계) [NEW]
 - **파일 명명 규칙**:
   - 일반 월별 포트폴리오: `2025-11.yaml`, `2025-12.yaml`
   - 적립식 투자 데이터: `2025-11-purchase.yaml`, `2025-12-purchase.yaml`
+
+- **YAML 파일 내 purchase_day 지정** (선택적):
+  ```yaml
+  purchase_day: 18          # 선택적. 없으면 CLI 기본값(26) 사용
+  accounts:
+    - name: 투자 (절세)
+      ...
+  ```
+  - 우선순위: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
 
 ### Phase 11: Streamlit 웹 대시보드 (Web Dashboard)
 
@@ -954,9 +1002,15 @@ python visualize_portfolio.py --month 2025-12
 
 ---
 
-**Last Updated**: 2025-12-26
-**Version**: 1.5.0
+**Last Updated**: 2026-02-12
+**Version**: 1.5.1
 **Maintainer**: AI Agent + Human
+
+**Changelog (v1.5.1)**:
+- **YAML 파일 내 purchase_day 지정 기능 추가**
+  - YAML 최상위에 `purchase_day: 18` 선택적 지정 가능
+  - 우선순위: YAML > CLI `--purchase-day` > 기본값 26
+  - 기존 YAML 파일 하위 호환성 유지 (키 없으면 기존 동작)
 
 **Changelog (v1.5.0)**:
 - **키보드 단축키 안정화** 🔥 **FIX!**

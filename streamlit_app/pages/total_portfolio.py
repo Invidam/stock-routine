@@ -8,6 +8,7 @@ from streamlit_app.data_loader import (
     search_total_holdings,
     get_total_sectors,
     get_total_top_holdings,
+    get_total_lookthrough_holdings,
     get_monthly_summary
 )
 from streamlit_app.components.charts import (
@@ -209,33 +210,66 @@ def render_sector_chart(selected_month: str):
 
 
 def render_top_holdings(selected_month: str):
-    """Top 20 Holdings (현재 평가액 기준)"""
+    """Top Holdings (직접 보유 / ETF 투시 토글)"""
 
-    st.subheader("🏅 통합 보유 종목 Top 20 (현재 평가액 기준)")
-
-    with st.spinner("현재가 조회 중..."):
-        df = get_total_top_holdings(selected_month, top_n=20)
-
-    if df.empty:
-        st.info("데이터가 없습니다.")
-        return
-
-    df_display = df.copy()
-    df_display.insert(0, '순위', range(1, len(df) + 1))
-
-    # 수익금액 계산
-    df_display['수익금액_raw'] = df_display['평가금액'] - df_display['투자원금']
-
-    df_display['투자원금'] = df_display['투자원금'].apply(lambda x: f"{int(x):,}원")
-    df_display['평가금액'] = df_display['평가금액'].apply(lambda x: f"{int(x):,}원")
-    df_display['수익금액'] = df_display['수익금액_raw'].apply(lambda x: f"{int(x):+,}원")
-    df_display['비중'] = df_display['percent'].apply(lambda x: f"{x:.1f}%")
-    df_display['수익률'] = df_display['return_rate'].apply(lambda x: f"{x:+.1f}%")
-
-    st.dataframe(
-        df_display[['순위', '종목', '유형', '투자원금', '평가금액', '수익금액', '비중', '수익률']],
-        width='stretch',
-        hide_index=True
+    lookthrough = st.toggle(
+        "🔎 ETF 투시",
+        value=False,
+        key="top_holdings_lookthrough",
+        help="ETF를 구성종목으로 풀어서 보여줍니다"
     )
 
-    st.caption("💡 평가금액은 현재 시장가 기준으로 계산됩니다. (실시간 조회)")
+    if lookthrough:
+        st.subheader("🏅 통합 보유 종목 Top 50 (ETF 투시)")
+
+        with st.spinner("ETF 투시 데이터 조회 중..."):
+            df = get_total_lookthrough_holdings(selected_month, top_n=50)
+
+        if df.empty:
+            st.info("ETF 투시 데이터가 없습니다. 분석을 먼저 실행해주세요.")
+            return
+
+        df_display = df.copy()
+        df_display.insert(0, '순위', range(1, len(df) + 1))
+        df_display['평가금액'] = df_display['평가금액'].apply(lambda x: f"{int(x):,}원")
+        df_display['비중(%)'] = df_display['비중(%)'].apply(lambda x: f"{x:.1f}%")
+
+        st.dataframe(
+            df_display[['순위', '종목', '유형', '비중(%)', '평가금액', '출처 ETF']],
+            width='stretch',
+            hide_index=True,
+            height=600
+        )
+
+        st.caption("💡 ETF를 구성종목으로 분해하여 실제 보유 종목 비중을 보여줍니다.")
+        st.caption("💡 OTHER 항목은 yfinance에서 제공하지 않는 나머지 구성종목입니다.")
+
+    else:
+        st.subheader("🏅 통합 보유 종목 Top 20 (현재 평가액 기준)")
+
+        with st.spinner("현재가 조회 중..."):
+            df = get_total_top_holdings(selected_month, top_n=20)
+
+        if df.empty:
+            st.info("데이터가 없습니다.")
+            return
+
+        df_display = df.copy()
+        df_display.insert(0, '순위', range(1, len(df) + 1))
+
+        # 수익금액 계산
+        df_display['수익금액_raw'] = df_display['평가금액'] - df_display['투자원금']
+
+        df_display['투자원금'] = df_display['투자원금'].apply(lambda x: f"{int(x):,}원")
+        df_display['평가금액'] = df_display['평가금액'].apply(lambda x: f"{int(x):,}원")
+        df_display['수익금액'] = df_display['수익금액_raw'].apply(lambda x: f"{int(x):+,}원")
+        df_display['비중'] = df_display['percent'].apply(lambda x: f"{x:.1f}%")
+        df_display['수익률'] = df_display['return_rate'].apply(lambda x: f"{x:+.1f}%")
+
+        st.dataframe(
+            df_display[['순위', '종목', '유형', '투자원금', '평가금액', '수익금액', '비중', '수익률']],
+            width='stretch',
+            hide_index=True
+        )
+
+        st.caption("💡 평가금액은 현재 시장가 기준으로 계산됩니다. (실시간 조회)")

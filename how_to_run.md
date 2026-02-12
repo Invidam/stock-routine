@@ -82,6 +82,39 @@ rm charts/2025-01_*.png
 
 ---
 
+## 🔄 파이프라인 요약 (run_monthly.py 실행 시)
+
+`run_monthly.py`를 실행하면 아래 4단계가 순서대로 실행됩니다.
+
+| 순서 | 스크립트 | 역할 | DB 반영 테이블 | 예시 (SPY 30만원, 2026-01, 26일 기준) |
+|---|---|---|---|---|
+| Step 1 | `import_monthly_data` | YAML 원본 데이터 저장 | `months` | `year_month="2026-01"`, `exchange_rate=1450` |
+| | | | `accounts` | `name="투자(절세)"`, `type="ISA"`, `month_id=1` |
+| | | | `holdings` | `ticker="SPY"`, `amount=300000`, `asset_type="STOCK"` |
+| Step 2 | `import_monthly_purchases` | 주가 조회 → 수량 계산 | `purchase_history` | `ticker="SPY"`, `quantity=0.3507`, `purchase_date="2026-01-26"`, `price_at_purchase=855500`, `currency="USD"`, `exchange_rate=1450` |
+| Step 3 | `analyze_portfolio` | yfinance로 ETF 내부 분석 | `analyzed_holdings` | `source="SPY"`, `symbol="AAPL"`, `my_amount=21000` / `symbol="OTHER"`, `my_amount=130000` |
+| | | | `analyzed_sectors` | `sector="technology"`, `my_amount=96000` / `sector="Cash & Equivalents"`, `my_amount=300000` |
+| | | | `analysis_metadata` | `ticker="SPY"`, `status="success"` |
+| Step 4 | `visualize_portfolio` | DB → 차트 이미지 생성 | (DB 변경 없음) | `charts/2026-01_asset_allocation.png`, `_sectors.png`, `_top_holdings.png`, `asset_trend.png` |
+| 별도 | `evaluate_accumulative` | 전체 수량 합산 → 현재가 평가 | (DB 변경 없음) | SPY 1.0469주 × 현재가 876,000원 = 917,085원, 수익률 +1.9% |
+
+> **참고**: `evaluate_accumulative`는 파이프라인에 포함되지 않으며, 적립식 투자 현황을 확인할 때 별도로 실행합니다.
+
+### 테이블별 역할 요약
+
+| 테이블 | 작성 단계 | 저장 내용 |
+|---|---|---|
+| `months` | Step 1 | 월 ID, 환율 |
+| `accounts` | Step 1 | 계좌 정보 (월마다 새로 생성) |
+| `holdings` | Step 1 | 사용자 입력 원본 — "SPY에 30만원 넣었다" |
+| `purchase_history` | Step 2 | 수량 기록 — "30만원으로 SPY 0.3507주 샀다" |
+| `analyzed_holdings` | Step 3 | ETF 내부 분석 — "30만원 중 AAPL이 7%, 즉 21,000원" |
+| `analyzed_sectors` | Step 3 | 섹터 비중 — "technology 32%, healthcare 13%" |
+| `analysis_metadata` | Step 3 | 분석 상태/에러 기록 |
+| `current_holdings_summary` | (뷰) | purchase_history를 종목별로 자동 집계 |
+
+---
+
 ## 📅 월별 루틴 (매월 실행)
 
 ### 방법 1: 통합 스크립트 (권장)

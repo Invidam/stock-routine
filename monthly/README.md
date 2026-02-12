@@ -11,6 +11,8 @@
 ## 📝 YAML 파일 구조
 
 ```yaml
+purchase_day: 26  # 매수 기준일 (선택적, 미지정 시 CLI 기본값 26)
+
 accounts:
   - name: "계좌 이름"
     type: "계좌 타입"  # ISA, IRP, 연금저축, 일반 등
@@ -24,6 +26,12 @@ accounts:
 ```
 
 ## 🔧 필드 설명
+
+### 파일 최상위 레벨
+- **purchase_day**: 매수 기준일 (선택적, 1~31)
+  - 지정 시 CLI `--purchase-day` 파라미터보다 우선 적용
+  - 미지정 시 CLI 기본값(26일) 사용
+  - 우선순위: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
 
 ### Account 레벨
 - **name**: 계좌의 별칭 (예: "투자 (절세)", "노후 준비")
