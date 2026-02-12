@@ -410,8 +410,16 @@ current_holdings_summary (뷰: 종목별 보유 수량 집계) [NEW]
 #### import_monthly_purchases(yaml_path, db_path, purchase_day)
 - 적립식 투자 데이터 임포트 (YAML → purchase_history)
 - **중요**: 기존 YAML 구조(`accounts > holdings`)를 그대로 사용
+- **purchase_day 우선순위**: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
+  - YAML 최상위에 `purchase_day: 18` 지정 시 CLI 파라미터보다 우선 적용
+  - 미지정 시 CLI 파라미터(기본값 26) 사용
 - 핵심 로직:
   ```python
+  # YAML에서 purchase_day 우선 읽기
+  yaml_purchase_day = data.get('purchase_day')
+  if yaml_purchase_day is not None:
+      purchase_day = int(yaml_purchase_day)
+
   # year_month 이중 형식
   file_stem = Path(yaml_path).stem  # "2025-11-purchase"
   year_month_db = file_stem  # DB 조회용
@@ -609,6 +617,15 @@ current_holdings_summary (뷰: 종목별 보유 수량 집계) [NEW]
 - **파일 명명 규칙**:
   - 일반 월별 포트폴리오: `2025-11.yaml`, `2025-12.yaml`
   - 적립식 투자 데이터: `2025-11-purchase.yaml`, `2025-12-purchase.yaml`
+
+- **YAML 파일 내 purchase_day 지정** (선택적):
+  ```yaml
+  purchase_day: 18          # 선택적. 없으면 CLI 기본값(26) 사용
+  accounts:
+    - name: 투자 (절세)
+      ...
+  ```
+  - 우선순위: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
 
 ### Phase 11: Streamlit 웹 대시보드 (Web Dashboard)
 
@@ -985,9 +1002,15 @@ python visualize_portfolio.py --month 2025-12
 
 ---
 
-**Last Updated**: 2025-12-26
-**Version**: 1.5.0
+**Last Updated**: 2026-02-12
+**Version**: 1.5.1
 **Maintainer**: AI Agent + Human
+
+**Changelog (v1.5.1)**:
+- **YAML 파일 내 purchase_day 지정 기능 추가**
+  - YAML 최상위에 `purchase_day: 18` 선택적 지정 가능
+  - 우선순위: YAML > CLI `--purchase-day` > 기본값 26
+  - 기존 YAML 파일 하위 호환성 유지 (키 없으면 기존 동작)
 
 **Changelog (v1.5.0)**:
 - **키보드 단축키 안정화** 🔥 **FIX!**

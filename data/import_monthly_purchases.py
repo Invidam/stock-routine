@@ -291,6 +291,12 @@ def import_monthly_purchases(yaml_path: str, db_path: str = "portfolio.db", purc
     print(f"\n📂 YAML 파일 읽는 중: {yaml_path}")
     data = load_yaml(yaml_path)
 
+    # YAML에 purchase_day가 지정되어 있으면 CLI 파라미터 대신 사용
+    yaml_purchase_day = data.get('purchase_day')
+    if yaml_purchase_day is not None:
+        print(f"   📅 YAML 지정 매수일: {yaml_purchase_day}일 (CLI 기본값 {purchase_day}일 대신 사용)")
+        purchase_day = int(yaml_purchase_day)
+
     # year_month 추출 (파일명에서)
     file_stem = Path(yaml_path).stem  # 2025-11
     year_month = file_stem  # DB 조회 및 날짜 생성 모두 동일: 2025-11
