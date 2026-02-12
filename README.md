@@ -584,6 +584,37 @@ streamlit run app.py
 
 ---
 
+## 🔗 다중 Mac 환경 설정 (iCloud 동기화)
+
+개인 투자 데이터(`monthly/*.yaml`)는 Git에 포함되지 않으므로, 여러 Mac에서 작업할 경우 iCloud를 통해 자동 동기화합니다.
+
+### 원리
+
+```
+iCloud Drive/stock-routine-private/monthly/   ← 실제 파일 (자동 동기화)
+        ↑ 심볼릭 링크
+stock-routine/monthly/                        ← 프로젝트에서 접근
+```
+
+### 초기 설정 (각 Mac에서 1회)
+
+```bash
+# 프로젝트 클론 후
+./setup.sh
+```
+
+`setup.sh`가 하는 일:
+1. iCloud에 `stock-routine-private/monthly/` 디렉토리 생성
+2. 기존 yaml 파일을 iCloud로 이동 (example/README 제외)
+3. `monthly/` → iCloud 심볼릭 링크 생성
+
+### 전제 조건
+
+- 양쪽 Mac이 동일한 Apple ID로 iCloud 로그인
+- iCloud Drive 활성화
+
+---
+
 ## 🎯 향후 계획
 
 - [x] 웹 대시보드 (Streamlit) ✅ **완료!**
