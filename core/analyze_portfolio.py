@@ -7,7 +7,6 @@ import time
 import yfinance as yf
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
-from pathlib import Path
 
 
 # ===== 0. 티커 매핑 및 환율 조회 =====
@@ -506,11 +505,6 @@ def analyze_stock_asset(
             }]
             save_analyzed_sectors(month_id, account_id, sectors_data, db_path, asset_type='STOCK')
 
-        # metadata 저장
-        save_analysis_metadata(
-            month_id, mapped_ticker, 'SUCCESS', None,
-            len(holdings_data), 1 if sector_name else 0, db_path
-        )
         return
 
     # ETF인 경우 (기존 로직)
@@ -519,12 +513,6 @@ def analyze_stock_asset(
     if holdings_df is not None and not holdings_df.empty:
         holdings_data = calculate_my_holdings(mapped_ticker, amount, holdings_df)
         save_analyzed_holdings(month_id, account_id, holdings_data, db_path, asset_type='STOCK')
-
-        # metadata 저장
-        save_analysis_metadata(
-            month_id, mapped_ticker, 'SUCCESS', None,
-            len(holdings_data), 0, db_path
-        )
 
     # Sectors 조회
     sectors = fetch_etf_sectors(mapped_ticker)
@@ -583,12 +571,6 @@ def analyze_bond_asset(
         }]
     save_analyzed_sectors(month_id, account_id, sectors_data, db_path, asset_type='BOND')
 
-    # metadata 저장
-    save_analysis_metadata(
-        month_id, mapped_ticker, 'SUCCESS', None,
-        len(holdings_data), len(sectors_data), db_path
-    )
-
 
 def analyze_cash_asset(
     ticker: str,
@@ -627,12 +609,6 @@ def analyze_cash_asset(
         'my_amount': amount
     }]
     save_analyzed_sectors(month_id, account_id, sectors_data, db_path, asset_type='CASH')
-
-    # metadata 저장
-    save_analysis_metadata(
-        month_id, 'CASH', 'SUCCESS', None,
-        1, 1, db_path
-    )
 
 
 # ===== 4. DB 저장 레이어 =====
@@ -737,42 +713,6 @@ def save_analyzed_sectors(
 
     return count
 
-
-def save_analysis_metadata(
-    month_id: int,
-    ticker: str,
-    status: str,
-    error_message: Optional[str],
-    holdings_count: int,
-    sectors_count: int,
-    db_path: str
-):
-    """
-    분석 메타데이터 저장
-
-    Args:
-        month_id: 월 ID
-        ticker: 분석 대상 티커
-        status: 'success', 'failed', 'skipped'
-        error_message: 에러 메시지
-        holdings_count: 수집된 종목 수
-        sectors_count: 수집된 섹터 수
-        db_path: DB 경로
-    """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        INSERT INTO analysis_metadata
-        (month_id, ticker, status, error_message, holdings_count, sectors_count)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (month_id, ticker, status, error_message, holdings_count, sectors_count)
-    )
-
-    conn.commit()
-    conn.close()
 
 
 # ===== 5. 집계 및 출력 레이어 =====
@@ -1175,7 +1115,6 @@ def analyze_month_portfolio(
             print(f"⚠️  기존 분석 데이터 {existing_count}건 삭제 중...")
             cursor.execute("DELETE FROM analyzed_holdings WHERE month_id = ?", (month_id,))
             cursor.execute("DELETE FROM analyzed_sectors WHERE month_id = ?", (month_id,))
-            cursor.execute("DELETE FROM analysis_metadata WHERE month_id = ?", (month_id,))
             conn.commit()
         else:
             print(f"❌ 이미 분석된 데이터가 있습니다. --overwrite 옵션을 사용하세요.")

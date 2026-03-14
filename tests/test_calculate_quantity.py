@@ -6,7 +6,7 @@
 """
 import pytest
 from unittest.mock import patch, MagicMock
-from data.import_monthly_purchases import (
+from data.importer import (
     calculate_quantity,
     get_historical_price,
     get_exchange_rate,
@@ -16,8 +16,8 @@ from data.import_monthly_purchases import (
 class TestCalculateQuantity:
     """quantity = input_amount / price_krw"""
 
-    @patch('data.import_monthly_purchases.get_exchange_rate')
-    @patch('data.import_monthly_purchases.get_historical_price')
+    @patch('data.importer.get_exchange_rate')
+    @patch('data.importer.get_historical_price')
     def test_us_stock_quantity(self, mock_hist, mock_exrate, initialized_db):
         """미국 주식: 투자액 / (USD가격 × 환율) = 수량"""
         mock_hist.return_value = ('2025-01-26', 590.0, 'USD')
@@ -40,7 +40,7 @@ class TestCalculateQuantity:
         assert result['exchange_rate'] == 1400.0
         assert result['purchase_date'] == '2025-01-26'
 
-    @patch('data.import_monthly_purchases.get_historical_price')
+    @patch('data.importer.get_historical_price')
     def test_korean_stock_quantity(self, mock_hist, initialized_db):
         """한국 주식: 투자액 / KRW가격 = 수량 (환율 없음)"""
         mock_hist.return_value = ('2025-01-26', 35000.0, 'KRW')
@@ -59,8 +59,8 @@ class TestCalculateQuantity:
         assert result['currency'] == 'KRW'
         assert result['exchange_rate'] is None
 
-    @patch('data.import_monthly_purchases.get_price_from_db')
-    @patch('data.import_monthly_purchases.get_historical_price')
+    @patch('data.importer.get_price_from_db')
+    @patch('data.importer.get_historical_price')
     def test_yfinance_fail_fallback_to_db(self, mock_hist, mock_db_price, populated_db):
         """yfinance 실패 시 DB에서 과거 주가 조회"""
         mock_hist.return_value = None  # yfinance 실패
@@ -78,8 +78,8 @@ class TestCalculateQuantity:
         assert result['quantity'] == pytest.approx(expected_qty, rel=1e-4)
         assert result['currency'] == 'KRW'  # DB 폴백 시 KRW로 처리
 
-    @patch('data.import_monthly_purchases.get_price_from_db')
-    @patch('data.import_monthly_purchases.get_historical_price')
+    @patch('data.importer.get_price_from_db')
+    @patch('data.importer.get_historical_price')
     def test_all_price_sources_fail(self, mock_hist, mock_db_price, initialized_db):
         """모든 가격 소스 실패 시 ValueError"""
         mock_hist.return_value = None
@@ -94,8 +94,8 @@ class TestCalculateQuantity:
                 db_path=initialized_db
             )
 
-    @patch('data.import_monthly_purchases.get_exchange_rate')
-    @patch('data.import_monthly_purchases.get_historical_price')
+    @patch('data.importer.get_exchange_rate')
+    @patch('data.importer.get_historical_price')
     def test_leftover_calculation(self, mock_hist, mock_exrate, initialized_db):
         """잔돈 계산: 투자액 - (정수 수량 × 주가)"""
         mock_hist.return_value = ('2025-01-26', 100.0, 'USD')

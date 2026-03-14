@@ -2,272 +2,23 @@
 포트폴리오 시각화 스크립트
 Matplotlib을 사용하여 차트 이미지 생성
 """
-import sqlite3
 import argparse
 from pathlib import Path
-from datetime import datetime
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 import pandas as pd
-from core.interest_calculator import calc_cash_current_value
+from core.portfolio_data import (
+    get_month_id,
+    get_asset_allocation,
+    get_sector_distribution,
+    get_top_holdings,
+    get_cumulative_value,
+    get_asset_trend,
+)
 
 # 한글 폰트 설정
 plt.rcParams['font.family'] = 'AppleGothic'  # macOS
 plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
 
-
-def get_net_worth(month_id: int, db_path: str) -> dict:
-    """자산 유형별 금액 조회"""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT asset_type, SUM(my_amount) as total_amount
-        FROM analyzed_holdings
-        WHERE month_id = ? AND account_id IS NULL
-        GROUP BY asset_type
-    """, (month_id,))
-
-    results = cursor.fetchall()
-    conn.close()
-
-    data = {}
-    total = 0
-    for asset_type, amount in results:
-        data[asset_type] = amount
-        total += amount
-
-    return {'total': total, 'by_type': data}
-
-
-def get_sector_distribution(month_id: int, db_path: str, limit: int = 10) -> pd.DataFrame:
-    """섹터별 비중 조회 (상위 N개)"""
-    conn = sqlite3.connect(db_path)
-
-    query = """
-        SELECT sector_name, asset_type, SUM(my_amount) as amount
-        FROM analyzed_sectors
-        WHERE month_id = ? AND account_id IS NULL
-        GROUP BY sector_name, asset_type
-        ORDER BY amount DESC
-        LIMIT ?
-    """
-
-    df = pd.read_sql_query(query, conn, params=(month_id, limit))
-    conn.close()
-
-    return df
-
-
-def get_top_holdings(month_id: int, db_path: str, limit: int = 10) -> pd.DataFrame:
-    """상위 보유 항목 조회 (터미널 출력과 동일한 로직)"""
-    conn = sqlite3.connect(db_path)
-
-    query = """
-        SELECT
-            CASE
-                WHEN asset_type IN ('STOCK', 'BOND') THEN stock_symbol
-                ELSE stock_name
-            END as display_name,
-            MAX(stock_name) as stock_name,
-            stock_symbol,
-            asset_type,
-            GROUP_CONCAT(DISTINCT source_ticker) as source_tickers,
-            SUM(my_amount) as amount
-        FROM analyzed_holdings
-        WHERE month_id = ? AND account_id IS NULL
-        GROUP BY
-            CASE
-                WHEN asset_type IN ('STOCK', 'BOND') THEN stock_symbol
-                ELSE stock_name
-            END,
-            asset_type
-        ORDER BY
-            CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,  -- OTHER을 마지막으로
-            amount DESC
-        LIMIT ?
-    """
-
-    df = pd.read_sql_query(query, conn, params=(month_id, limit))
-    conn.close()
-
-    # OTHER 제외
-    df = df[df['stock_symbol'] != 'OTHER']
-
-    return df
-
-
-def get_cumulative_net_worth(up_to_month: str, db_path: str) -> dict:
-    """
-    해당 월까지의 누적 자산 계산
-
-    투자금액은 purchase_history에서 누적 계산
-    현재가치는 누적 수량 × 현재 시장가로 계산
-
-    Args:
-        up_to_month: 기준 월 (YYYY-MM)
-        db_path: 데이터베이스 경로
-
-    Returns:
-        {
-            'total_invested': 4560000,
-            'total_current': 4823000,
-            'profit': 263000,
-            'return_rate': 5.77,
-            'by_type': {
-                'STOCK': {
-                    'invested': 3240000,
-                    'current': 3450000,
-                    'percentage': 71.57
-                },
-                ...
-            }
-        }
-    """
-    import yfinance as yf
-
-    conn = sqlite3.connect(db_path)
-
-    # 1. purchase_history에서 투자금액 및 수량 누적 (CASH 제외)
-    holdings_df = pd.read_sql_query("""
-        SELECT
-            ticker,
-            asset_type,
-            SUM(quantity) as total_quantity,
-            SUM(input_amount) as invested,
-            AVG(exchange_rate) as avg_exchange_rate
-        FROM purchase_history
-        WHERE year_month <= ?
-        GROUP BY ticker, asset_type
-    """, conn, params=(up_to_month,))
-
-    # 2. purchase_history에서 CASH 누적 (이자 계산용 개별 레코드)
-    cash_records = pd.read_sql_query("""
-        SELECT
-            input_amount, purchase_date, interest_rate, interest_type
-        FROM purchase_history
-        WHERE asset_type = 'CASH' AND year_month <= ?
-    """, conn, params=(up_to_month,))
-
-    conn.close()
-
-    # CASH 이자 반영 평가액 계산
-    cash_invested = 0
-    cash_value = 0.0
-    if not cash_records.empty:
-        cash_invested = int(cash_records['input_amount'].sum())
-        for _, rec in cash_records.iterrows():
-            rate = rec['interest_rate'] if pd.notna(rec['interest_rate']) else None
-            itype = rec['interest_type'] if pd.notna(rec['interest_type']) else 'simple'
-            cash_value += calc_cash_current_value(
-                principal=int(rec['input_amount']),
-                annual_rate=rate,
-                purchase_date=rec['purchase_date'],
-                interest_type=itype,
-            )
-
-    if cash_invested > 0:
-        cash_row = pd.DataFrame([{
-            'ticker': 'CASH',
-            'asset_type': 'CASH',
-            'total_quantity': 0.0,
-            'invested': cash_invested,
-            'avg_exchange_rate': None,
-        }])
-        holdings_df = pd.concat([holdings_df, cash_row], ignore_index=True)
-
-    if holdings_df.empty:
-        return {
-            'total_invested': 0,
-            'total_current': 0,
-            'profit': 0,
-            'return_rate': 0,
-            'by_type': {}
-        }
-
-    # 4. 환율 조회
-    try:
-        exchange_rate = yf.Ticker("KRW=X").fast_info['last_price']
-    except:
-        exchange_rate = 1450.0
-
-    # 5. 각 ticker별 현재가 조회 및 current_value 계산
-    holdings_df['current_value'] = 0.0
-
-    for idx, row in holdings_df.iterrows():
-        ticker = row['ticker']
-        quantity = row['total_quantity']
-        asset_type = row['asset_type']
-        invested = row['invested']
-
-        if asset_type == 'CASH' or ticker == 'CASH':
-            # CASH는 이자 반영 평가액 사용
-            holdings_df.at[idx, 'current_value'] = cash_value if cash_value > 0 else invested
-        else:
-            try:
-                # yfinance로 현재가 조회
-                stock = yf.Ticker(ticker)
-                current_price_usd = stock.fast_info['last_price']
-
-                # 한국 주식 여부 확인
-                is_korean = ticker.endswith(('.KS', '.KQ'))
-                if is_korean:
-                    current_value = quantity * current_price_usd
-                else:
-                    current_value = quantity * current_price_usd * exchange_rate
-
-                holdings_df.at[idx, 'current_value'] = current_value
-
-            except Exception as e:
-                # 가격 조회 실패 시 투자금액으로 대체
-                print(f"⚠️  {ticker} 현재가 조회 실패, 투자금액 사용: {e}")
-                holdings_df.at[idx, 'current_value'] = invested
-
-    # 6. asset_type별 집계
-    by_type_df = holdings_df.groupby('asset_type').agg({
-        'invested': 'sum',
-        'current_value': 'sum'
-    }).reset_index()
-
-    # 7. 결과 계산
-    result = {'by_type': {}}
-    total_invested = by_type_df['invested'].sum()
-    total_current = by_type_df['current_value'].sum()
-
-    for _, row in by_type_df.iterrows():
-        asset_type = row['asset_type']
-        invested = row['invested']
-        current = row['current_value']
-
-        result['by_type'][asset_type] = {
-            'invested': invested,
-            'current': current,
-            'profit': current - invested,
-            'percentage': (current / total_current * 100) if total_current > 0 else 0
-        }
-
-    result['total_invested'] = total_invested
-    result['total_current'] = total_current
-    result['profit'] = total_current - total_invested
-    result['return_rate'] = ((total_current - total_invested) / total_invested * 100) if total_invested > 0 else 0
-    result['total'] = total_current  # 기존 호환성 유지
-
-    return result
-
-
-def get_month_id(year_month: str, db_path: str) -> int:
-    """year_month로부터 month_id 조회"""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT id FROM months WHERE year_month = ?", (year_month,))
-    result = cursor.fetchone()
-    conn.close()
-
-    if not result:
-        raise ValueError(f"Month {year_month} not found in database")
-
-    return result[0]
 
 
 def create_asset_allocation_chart(net_worth: dict, output_path: str):
@@ -491,61 +242,13 @@ def create_top_holdings_chart(holdings_df: pd.DataFrame, output_path: str, top_n
     print(f"✅ 상위 보유 종목 차트 저장: {output_path} (총 {len(display_df)}개 항목)")
 
 
-def create_asset_trend_chart(db_path: str, output_path: str, months: int = 6):
-    """자산 추이 라인 차트 생성 (투자금액 vs 평가금액)"""
-    conn = sqlite3.connect(db_path)
+def create_asset_trend_chart_from_data(df: pd.DataFrame, output_path: str):
+    """자산 추이 라인 차트 생성 (portfolio_data.get_asset_trend()의 결과 소비)
 
-    # 1. 투자금액 누적 (purchase_history)
-    invested_query = """
-        SELECT
-            year_month,
-            SUM(input_amount) as monthly_invested
-        FROM purchase_history
-        GROUP BY year_month
-        ORDER BY year_month
+    Args:
+        df: DataFrame with [year_month, invested, current_value]
+        output_path: 저장 경로
     """
-
-    invested_df = pd.read_sql_query(invested_query, conn)
-
-    # 2. CASH 추가 (purchase_history, 이자 반영)
-    cash_query = """
-        SELECT
-            year_month,
-            SUM(input_amount) as cash_amount
-        FROM purchase_history
-        WHERE asset_type = 'CASH'
-        GROUP BY year_month
-        ORDER BY year_month
-    """
-
-    cash_df = pd.read_sql_query(cash_query, conn)
-
-    # 3. 평가금액 (analyzed_holdings)
-    value_query = """
-        SELECT
-            m.year_month,
-            SUM(ah.my_amount) as current_value
-        FROM months m
-        JOIN analyzed_holdings ah ON m.id = ah.month_id
-        WHERE ah.account_id IS NULL
-        GROUP BY m.year_month
-        ORDER BY m.year_month
-    """
-
-    value_df = pd.read_sql_query(value_query, conn)
-    conn.close()
-
-    # 4. 데이터 병합
-    df = pd.merge(invested_df, cash_df, on='year_month', how='outer')
-    df = pd.merge(df, value_df, on='year_month', how='outer')
-    df = df.fillna(0)
-
-    # 누적 투자금액 계산
-    df['cumulative_invested'] = (df['monthly_invested'] + df['cash_amount']).cumsum()
-
-    # 최근 N개월만 표시
-    df = df.tail(months)
-
     if df.empty or len(df) < 1:
         print(f"⚠️  자산 추이를 표시하기 위한 충분한 데이터가 없습니다")
         return
@@ -554,7 +257,7 @@ def create_asset_trend_chart(db_path: str, output_path: str, months: int = 6):
     fig, ax = plt.subplots(figsize=(14, 7))
 
     # 투자금액 선 (파란색)
-    ax.plot(df['year_month'], df['cumulative_invested'],
+    ax.plot(df['year_month'], df['invested'],
             marker='o', linewidth=2.5, markersize=8,
             color='#4A90E2', label='투자금액', zorder=3)
 
@@ -564,20 +267,20 @@ def create_asset_trend_chart(db_path: str, output_path: str, months: int = 6):
             color='#50C878', label='평가금액', zorder=3)
 
     # 면적 채우기 (수익 영역)
-    ax.fill_between(df['year_month'], df['cumulative_invested'], df['current_value'],
-                     where=(df['current_value'] >= df['cumulative_invested']),
+    ax.fill_between(df['year_month'], df['invested'], df['current_value'],
+                     where=(df['current_value'] >= df['invested']),
                      alpha=0.2, color='#50C878', label='수익')
 
     # 면적 채우기 (손실 영역)
-    ax.fill_between(df['year_month'], df['cumulative_invested'], df['current_value'],
-                     where=(df['current_value'] < df['cumulative_invested']),
+    ax.fill_between(df['year_month'], df['invested'], df['current_value'],
+                     where=(df['current_value'] < df['invested']),
                      alpha=0.2, color='#FF6B6B', label='손실')
 
     # 각 포인트에 금액 표시
     for i, row in df.iterrows():
         # 투자금액
-        ax.text(row['year_month'], row['cumulative_invested'] + max(df['current_value']) * 0.02,
-                f'{int(row["cumulative_invested"]):,}',
+        ax.text(row['year_month'], row['invested'] + max(df['current_value']) * 0.02,
+                f'{int(row["invested"]):,}',
                 ha='center', fontsize=9, weight='bold', color='#4A90E2')
         # 평가금액
         ax.text(row['year_month'], row['current_value'] - max(df['current_value']) * 0.02,
@@ -616,14 +319,13 @@ def visualize_portfolio(year_month: str, db_path: str = "portfolio.db", output_d
     output_path.mkdir(exist_ok=True)
 
     # month_id 조회
-    try:
-        month_id = get_month_id(year_month, db_path)
-    except ValueError as e:
-        print(f"❌ {e}")
+    month_id = get_month_id(year_month, db_path)
+    if not month_id:
+        print(f"❌ Month {year_month} not found in database")
         return
 
     # 1. 자산 배분 차트 (누적)
-    net_worth = get_cumulative_net_worth(year_month, db_path)
+    net_worth = get_cumulative_value(year_month, db_path)
     create_asset_allocation_chart(
         net_worth,
         output_path / f"{year_month}_asset_allocation.png"
@@ -645,10 +347,10 @@ def visualize_portfolio(year_month: str, db_path: str = "portfolio.db", output_d
     )
 
     # 4. 자산 추이 차트 (누적, 고정 파일명)
-    create_asset_trend_chart(
-        db_path,
-        output_path / "cumulative_asset_trend.png",
-        months=12
+    trend_df = get_asset_trend(db_path, months=12)
+    create_asset_trend_chart_from_data(
+        trend_df,
+        output_path / "cumulative_asset_trend.png"
     )
 
     print("=" * 80)

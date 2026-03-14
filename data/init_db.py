@@ -3,7 +3,6 @@ SQLite 데이터베이스 초기화 스크립트
 테이블 생성 및 스키마 설정
 """
 import sqlite3
-from pathlib import Path
 
 
 def init_database(db_path: str = "portfolio.db"):
@@ -91,22 +90,7 @@ def init_database(db_path: str = "portfolio.db"):
             )
         """)
 
-        # 6. analysis_metadata 테이블 생성 (분석 메타데이터)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS analysis_metadata (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                month_id INTEGER NOT NULL,
-                ticker TEXT NOT NULL,
-                status TEXT NOT NULL,
-                error_message TEXT,
-                holdings_count INTEGER DEFAULT 0,
-                sectors_count INTEGER DEFAULT 0,
-                analyzed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (month_id) REFERENCES months(id) ON DELETE CASCADE
-            )
-        """)
-
-        # 7. purchase_history 테이블 생성 (적립식 투자 매수 이력)
+        # 6. purchase_history 테이블 생성 (적립식 투자 매수 이력)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS purchase_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,10 +184,6 @@ def init_database(db_path: str = "portfolio.db"):
             ON analyzed_sectors(asset_type)
         """)
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_analysis_metadata_month
-            ON analysis_metadata(month_id)
-        """)
 
         # 마이그레이션: 기존 purchase_history에 interest_rate, interest_type 컬럼 추가
         try:
@@ -239,7 +219,6 @@ def init_database(db_path: str = "portfolio.db"):
         print("   - holdings 테이블 생성")
         print("   - analyzed_holdings 테이블 생성")
         print("   - analyzed_sectors 테이블 생성")
-        print("   - analysis_metadata 테이블 생성")
         print("   - purchase_history 테이블 생성")
         print("   - current_holdings_summary 뷰 생성")
         print("   - 인덱스 생성 완료")

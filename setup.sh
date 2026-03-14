@@ -1,4 +1,4 @@
-#!/bin/bash
+이것ㄷ ㅗ#!/bin/bash
 # stock-routine 초기 셋업 스크립트
 # iCloud에 monthly 파일을 동기화하고 심볼릭 링크를 설정합니다.
 # git-tracked 파일(example-*, README.md)은 프로젝트에 유지됩니다.

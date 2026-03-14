@@ -10,101 +10,40 @@ import yaml
 from streamlit_app.config import CACHE_TTL, DB_PATH
 from streamlit_app.utils.formatters import get_previous_month
 from core.interest_calculator import calc_cash_current_value
+from core.portfolio_data import (
+    calc_cash_value as _portfolio_calc_cash_value,
+    get_month_id as _portfolio_get_month_id,
+    get_available_months as _portfolio_get_available_months,
+    get_latest_month as _portfolio_get_latest_month,
+    DEFAULT_EXCHANGE_RATE,
+)
 
 # YAML 파일 경로
 MONTHLY_DIR = Path(__file__).parent.parent / "monthly"
 
 
 def _calc_cash_value_from_db(db_path: str, month_id: Optional[int] = None) -> Tuple[int, float]:
-    """
-    CASH 자산의 투자원금 합계와 이자 반영 평가액을 계산
-
-    Args:
-        db_path: DB 경로
-        month_id: 특정 월 ID (None이면 전체)
-
-    Returns:
-        (cash_invested, cash_current_value)
-    """
-    conn = sqlite3.connect(db_path)
-    if month_id is not None:
-        records = pd.read_sql_query("""
-            SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
-            FROM purchase_history ph
-            JOIN accounts a ON ph.account_id = a.id
-            WHERE a.month_id = ? AND ph.asset_type = 'CASH'
-        """, conn, params=(month_id,))
-    else:
-        records = pd.read_sql_query("""
-            SELECT input_amount, purchase_date, interest_rate, interest_type
-            FROM purchase_history
-            WHERE asset_type = 'CASH'
-        """, conn)
-    conn.close()
-
-    if records.empty:
-        return 0, 0.0
-
-    total_invested = int(records['input_amount'].sum())
-    total_value = 0.0
-    for _, rec in records.iterrows():
-        rate = rec['interest_rate'] if pd.notna(rec['interest_rate']) else None
-        itype = rec['interest_type'] if pd.notna(rec['interest_type']) else 'simple'
-        total_value += calc_cash_current_value(
-            principal=int(rec['input_amount']),
-            annual_rate=rate,
-            purchase_date=rec['purchase_date'],
-            interest_type=itype,
-        )
-
-    return total_invested, total_value
+    """CASH 자산의 투자원금 합계와 이자 반영 평가액을 계산 (공통 레이어 위임)"""
+    return _portfolio_calc_cash_value(db_path, month_id=month_id)
 
 
 # ===== 기본 데이터 조회 =====
 
 @st.cache_data(ttl=CACHE_TTL['static_data'])
 def get_available_months(db_path: str = DB_PATH) -> List[str]:
-    """
-    사용 가능한 월 목록 조회 (내림차순)
-
-    Returns:
-        ['2025-12', '2025-11', ...]
-    """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT year_month
-        FROM months
-        ORDER BY year_month DESC
-    """)
-
-    months = [row[0] for row in cursor.fetchall()]
-    conn.close()
-
-    return months
+    """사용 가능한 월 목록 조회 (내림차순)"""
+    return _portfolio_get_available_months(db_path)
 
 
 @st.cache_data(ttl=CACHE_TTL['static_data'])
 def get_latest_month(db_path: str = DB_PATH) -> Optional[str]:
     """최신 월 반환"""
-    months = get_available_months(db_path)
-    return months[0] if months else None
+    return _portfolio_get_latest_month(db_path)
 
 
 def get_month_id(year_month: str, db_path: str = DB_PATH) -> Optional[int]:
     """year_month로 month_id 조회"""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT id FROM months WHERE year_month = ?
-    """, (year_month,))
-
-    result = cursor.fetchone()
-    conn.close()
-
-    return result[0] if result else None
+    return _portfolio_get_month_id(year_month, db_path)
 
 
 # ===== 월별 요약 데이터 =====
@@ -130,7 +69,7 @@ def _calculate_portfolio_value(purchase_data: List[Tuple], cash_invested: float,
     # 환율 조회
     exchange_rate = get_current_price('KRW=X')
     if not exchange_rate or exchange_rate <= 0:
-        exchange_rate = 1400  # 기본 환율
+        exchange_rate = DEFAULT_EXCHANGE_RATE
 
     # 2. 평가액 계산
     total_value = 0
@@ -261,36 +200,6 @@ def get_monthly_summary(year_month: str, db_path: str = DB_PATH) -> Dict:
         'return_rate': round(return_rate, 1)
     }
 
-
-@st.cache_data(ttl=CACHE_TTL['monthly_data'])
-def get_recent_months_data(current_month: str, num_months: int = 3, db_path: str = DB_PATH) -> pd.DataFrame:
-    """
-    최근 N개월 데이터를 테이블로 반환
-
-    Returns:
-        DataFrame with columns: ['월', '총 자산', '총 원금', '총 수익', '수익률']
-    """
-    all_months = get_available_months(db_path)
-
-    # 현재 월부터 역순으로 N개월
-    try:
-        current_idx = all_months.index(current_month)
-        selected_months = all_months[current_idx:current_idx + num_months]
-    except ValueError:
-        selected_months = all_months[:num_months]
-
-    data = []
-    for month in selected_months:
-        summary = get_monthly_summary(month, db_path)
-        data.append({
-            '월': month,
-            '총 자산': summary['total_value'],
-            '총 원금': summary['total_invested'],
-            '총 수익': summary['total_profit'],
-            '수익률': summary['return_rate']
-        })
-
-    return pd.DataFrame(data)
 
 
 # ===== 자산 유형별 데이터 =====
@@ -447,7 +356,8 @@ def get_accounts(year_month: str, db_path: str = DB_PATH) -> List[Dict]:
                 SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
                 FROM purchase_history ph
                 WHERE ph.account_id = ? AND ph.asset_type = 'CASH'
-            """, conn, params=(account_id,))
+                  AND ph.purchase_date LIKE ?
+            """, conn, params=(account_id, f"{year_month}%"))
 
         cash_value = 0.0
         for _, rec in cash_records.iterrows():
@@ -535,17 +445,24 @@ def get_account_holdings(year_month: str, account_id: int, db_path: str = DB_PAT
         """
         df = pd.read_sql_query(query_ph, conn, params=(account_id,))
 
-        # CASH 추가 (최신 월 holdings에서)
+        # CASH 추가 (전체 기간: purchase_history에서 합산)
         latest_month = get_latest_month(db_path)
         latest_month_id = get_month_id(latest_month, db_path) if latest_month else None
         if latest_month_id:
+            # 종목명은 최신 월 holdings에서, 투자원금은 purchase_history 전체 합산
             query_cash = """
                 SELECT
                     h.name as 종목명,
                     h.ticker_mapping as 티커,
                     h.asset_type as 자산유형,
                     0.0 as 보유수량,
-                    h.amount as 투자원금,
+                    COALESCE(
+                        (SELECT SUM(ph2.input_amount)
+                         FROM purchase_history ph2
+                         WHERE ph2.ticker = h.ticker_mapping
+                           AND ph2.asset_type = 'CASH'),
+                        h.amount
+                    ) as 투자원금,
                     0 as is_other
                 FROM holdings h
                 JOIN accounts a ON h.account_id = a.id
@@ -625,28 +542,31 @@ def get_account_holdings(year_month: str, account_id: int, db_path: str = DB_PAT
     )
 
     # CASH 이자 반영: purchase_history에서 interest_rate/interest_type으로 직접 계산
+    # "전체 기간"이면 모든 purchase_history, 특정 월이면 해당 월만 조회
     cash_value_map = {}  # 종목명 -> 평가액
     cash_rows = df[df['자산유형'] == 'CASH']
     if not cash_rows.empty:
         conn2 = sqlite3.connect(db_path)
+        # 특정 월이면 해당 월의 purchase_date로 필터링
+        month_filter = "" if year_month == "전체 기간" else f" AND ph.purchase_date LIKE '{year_month}%'"
         for _, crow in cash_rows.iterrows():
             cash_name = crow['종목명']
             # purchase_history에서 ticker 또는 name으로 매칭
-            cash_info = pd.read_sql_query("""
+            cash_info = pd.read_sql_query(f"""
                 SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
                 FROM purchase_history ph
-                WHERE ph.asset_type = 'CASH' AND ph.ticker = ?
+                WHERE ph.asset_type = 'CASH' AND ph.ticker = ?{month_filter}
             """, conn2, params=(cash_name,))
             if cash_info.empty:
                 # ticker_mapping이 다른 경우 holdings name으로 재시도
-                cash_info = pd.read_sql_query("""
+                cash_info = pd.read_sql_query(f"""
                     SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
                     FROM purchase_history ph
                     JOIN accounts a ON ph.account_id = a.id
                     JOIN holdings h ON h.account_id = a.id
                         AND (h.ticker_mapping = ph.ticker OR h.name = ph.ticker)
                         AND h.asset_type = 'CASH'
-                    WHERE h.name = ? AND ph.asset_type = 'CASH'
+                    WHERE h.name = ? AND ph.asset_type = 'CASH'{month_filter}
                 """, conn2, params=(cash_name,))
             if not cash_info.empty:
                 total_val = 0.0
@@ -871,6 +791,7 @@ def get_total_top_holdings(year_month: str, top_n: int = 20, db_path: str = DB_P
                 SUM(quantity) as total_quantity,
                 SUM(input_amount) as invested
             FROM purchase_history
+            WHERE asset_type != 'CASH'
             GROUP BY ticker, asset_type
         """
         df = pd.read_sql_query(query, conn)
@@ -888,7 +809,7 @@ def get_total_top_holdings(year_month: str, top_n: int = 20, db_path: str = DB_P
                 SUM(ph.input_amount) as invested
             FROM purchase_history ph
             JOIN accounts a ON ph.account_id = a.id
-            WHERE a.month_id = ?
+            WHERE a.month_id = ? AND ph.asset_type != 'CASH'
             GROUP BY ph.ticker, ph.asset_type
         """
         df = pd.read_sql_query(query, conn, params=(month_id,))
@@ -927,25 +848,27 @@ def get_total_top_holdings(year_month: str, top_n: int = 20, db_path: str = DB_P
         df = pd.concat([df, df_cash], ignore_index=True)
 
     # CASH 이자 반영 평가액을 미리 계산
+    # 특정 월이면 해당 월의 purchase_date로 필터링
+    cash_month_filter = "" if year_month == "전체 기간" else f" AND ph.purchase_date LIKE '{year_month}%'"
     cash_value_map = {}
     cash_names = df[df['asset_type'] == 'CASH']['ticker'].unique()
     for cash_name in cash_names:
         # purchase_history에서 ticker로 직접 매칭
-        cash_info = pd.read_sql_query("""
+        cash_info = pd.read_sql_query(f"""
             SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
             FROM purchase_history ph
-            WHERE ph.asset_type = 'CASH' AND ph.ticker = ?
+            WHERE ph.asset_type = 'CASH' AND ph.ticker = ?{cash_month_filter}
         """, conn, params=(cash_name,))
         if cash_info.empty:
             # holdings name으로 재시도
-            cash_info = pd.read_sql_query("""
+            cash_info = pd.read_sql_query(f"""
                 SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
                 FROM purchase_history ph
                 JOIN accounts a ON ph.account_id = a.id
                 JOIN holdings h ON h.account_id = a.id
                     AND (h.ticker_mapping = ph.ticker OR h.name = ph.ticker)
                     AND h.asset_type = 'CASH'
-                WHERE h.name = ? AND ph.asset_type = 'CASH'
+                WHERE h.name = ? AND ph.asset_type = 'CASH'{cash_month_filter}
             """, conn, params=(cash_name,))
         if not cash_info.empty:
             total_val = 0.0
@@ -1365,7 +1288,7 @@ def get_monthly_holdings_comparison(year_month: str, db_path: str = DB_PATH) -> 
     # 환율 조회 (USD/KRW)
     exchange_rate = get_current_price('KRW=X')  # USD to KRW
     if not exchange_rate or exchange_rate <= 0:
-        exchange_rate = 1400  # 기본 환율 (조회 실패 시)
+        exchange_rate = DEFAULT_EXCHANGE_RATE
 
     # 각 행에 현재가 매핑
     df['현재가(USD)'] = df['티커'].map(current_prices)

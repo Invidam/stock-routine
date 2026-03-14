@@ -133,7 +133,7 @@ st.title("💰 포트폴리오 대시보드")
 # 월 선택 드롭다운
 if not months:
     st.error("❌ 데이터베이스에 월별 데이터가 없습니다.")
-    st.info("먼저 `import_monthly_data.py`를 실행하여 데이터를 임포트하세요.")
+    st.info("먼저 `python run.py --month YYYY-MM`을 실행하여 데이터를 임포트하세요.")
     st.stop()
 
 # 초기 선택 월 설정

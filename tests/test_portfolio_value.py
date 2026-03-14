@@ -145,7 +145,7 @@ class TestCalculatePortfolioValue:
     @patch('streamlit_app.utils.price_fetcher.get_multiple_prices')
     @patch('streamlit_app.utils.price_fetcher.get_current_price')
     def test_exchange_rate_failure_uses_default(self, mock_price, mock_prices):
-        """환율 조회 실패 시 기본값 1400 사용"""
+        """환율 조회 실패 시 기본값 1450 사용"""
         import streamlit_app.data_loader as dl
 
         mock_price.return_value = None  # 환율 조회 실패
@@ -155,8 +155,8 @@ class TestCalculatePortfolioValue:
 
         invested, value = dl._calculate_portfolio_value(purchase_data, 0, 0)
 
-        # 기본 환율 1400 적용
-        expected_value = int(0.3632 * 610.0 * 1400)
+        # 기본 환율 1450 적용 (DEFAULT_EXCHANGE_RATE)
+        expected_value = int(0.3632 * 610.0 * 1450)
         assert value == expected_value
 
     @patch('streamlit_app.utils.price_fetcher.get_multiple_prices')

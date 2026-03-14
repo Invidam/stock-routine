@@ -1,40 +1,35 @@
-# 🤖 Agent Development Guide
+# Agent Development Guide
 
 이 문서는 AI 에이전트 및 개발자가 프로젝트를 이해하고 수정할 때 참고하는 가이드입니다.
 
-## 📐 아키텍처 개요
+## 아키텍처 개요
 
 ### 시스템 플로우
 
 ```
 YAML 데이터 작성
     ↓
-[Step 1] data/import_monthly_data.py (YAML → months, accounts, holdings)
+[Step 1] data/importer.py (YAML → months, accounts, holdings + 주가 조회 → purchase_history)
     ↓
-[Step 2] data/import_monthly_purchases.py (주가 조회 → 수량 계산 → purchase_history)
+[Step 2] core/analyze_portfolio.py (yfinance → ETF 분석 → analyzed_holdings, analyzed_sectors)
     ↓
-[Step 3] core/analyze_portfolio.py (yfinance → ETF 분석 → analyzed_holdings, analyzed_sectors)
-    ↓
-[Step 4] visualization/visualize_portfolio.py (DB → Matplotlib 차트)
+[Step 3] visualization/visualize_portfolio.py (core/portfolio_data → Matplotlib 차트)
     ↓
 charts/*.png (최종 출력)
 
 [별도] core/evaluate_accumulative.py (purchase_history 합산 → 현재가 평가)
 ```
 
-### 파이프라인 상세 (run_monthly.py 실행 시)
+### 파이프라인 상세 (`python run.py` 실행 시)
 
-| 순서 | 스크립트 | 역할 | DB 반영 테이블 | 예시 (SPY 30만원, 2026-01, 26일 기준) |
+| 순서 | 모듈 | 역할 | DB 반영 테이블 | 예시 (SPY 30만원, 2026-01, 26일 기준) |
 |---|---|---|---|---|
-| Step 1 | `import_monthly_data` | YAML 원본 데이터 저장 | `months` | `year_month="2026-01"`, `exchange_rate=1450` |
-| | | | `accounts` | `name="투자(절세)"`, `type="ISA"`, `month_id=1` |
-| | | | `holdings` | `ticker="SPY"`, `amount=300000`, `asset_type="STOCK"` |
-| Step 2 | `import_monthly_purchases` | 주가 조회 → 수량 계산 | `purchase_history` | `ticker="SPY"`, `quantity=0.3507`, `purchase_date="2026-01-26"`, `price_at_purchase=855500`, `currency="USD"`, `exchange_rate=1450` |
-| Step 3 | `analyze_portfolio` | yfinance로 ETF 내부 분석 | `analyzed_holdings` | `source="SPY"`, `symbol="AAPL"`, `my_amount=21000` / `symbol="OTHER"`, `my_amount=130000` |
-| | | | `analyzed_sectors` | `sector="technology"`, `my_amount=96000` / `sector="Cash & Equivalents"`, `my_amount=300000` |
-| | | | `analysis_metadata` | `ticker="SPY"`, `status="success"` |
-| Step 4 | `visualize_portfolio` | DB → 차트 이미지 생성 | (DB 변경 없음) | `charts/2026-01_asset_allocation.png`, `_sectors.png`, `_top_holdings.png`, `asset_trend.png` |
-| 별도 | `evaluate_accumulative` | 전체 수량 합산 → 현재가 평가 | (DB 변경 없음) | SPY 1.0469주 × 현재가 876,000원 = 917,085원, 수익률 +1.9% |
+| Step 1 | `data.importer.import_month()` | YAML → DB 통합 임포트 | `months`, `accounts`, `holdings`, `purchase_history` | YAML 원본 저장 + 수량 계산 (`quantity=0.3507`) |
+| Step 2 | `core.analyze_portfolio` | yfinance로 ETF 내부 분석 | `analyzed_holdings`, `analyzed_sectors` | `source="SPY"`, `symbol="AAPL"`, `my_amount=21000` |
+| Step 3 | `visualization.visualize_portfolio` | 데이터 조회 + 차트 생성 | (DB 변경 없음) | `charts/2026-01_asset_allocation.png` 등 4종 |
+| 별도 | `core.evaluate_accumulative` | 전체 수량 합산 → 현재가 평가 | (DB 변경 없음) | SPY 1.0469주 × 현재가 876,000원 = 917,085원 |
+
+**자동 스킵**: `run.py`는 이미 임포트/분석된 월은 자동으로 건너뛴다. `--force`로 강제 재실행 가능.
 
 ### 테이블별 역할 요약
 
@@ -43,77 +38,38 @@ charts/*.png (최종 출력)
 | `months` | Step 1 | 월 ID, 환율 |
 | `accounts` | Step 1 | 계좌 정보 (월마다 새로 생성) |
 | `holdings` | Step 1 | 사용자 입력 원본 — "SPY에 30만원 넣었다" |
-| `purchase_history` | Step 2 | 수량 기록 — "30만원으로 SPY 0.3507주 샀다" (수량 불변) |
-| `analyzed_holdings` | Step 3 | ETF 내부 분석 — "30만원 중 AAPL이 7%, 즉 21,000원" |
-| `analyzed_sectors` | Step 3 | 섹터 비중 — "technology 32%, healthcare 13%" |
-| `analysis_metadata` | Step 3 | 분석 상태/에러 기록 |
+| `purchase_history` | Step 1 | 수량 기록 — "30만원으로 SPY 0.3507주 샀다" (수량 불변) |
+| `analyzed_holdings` | Step 2 | ETF 내부 분석 — "30만원 중 AAPL이 7%, 즉 21,000원" |
+| `analyzed_sectors` | Step 2 | 섹터 비중 — "technology 32%, healthcare 13%" |
 | `current_holdings_summary` | (뷰) | purchase_history를 종목별로 자동 집계 |
 
 ### 핵심 컴포넌트
 
-1. **데이터 레이어** (`data/`)
-   - `init_db.py`: 스키마 정의 및 DB 초기화
-   - `import_monthly_data.py`: YAML → DB 변환
-   - `import_monthly_purchases.py`: 적립식 투자 수량 계산
-   - `query_db.py`: DB 쿼리 유틸리티
-   - `portfolio.db`: SQLite 데이터베이스 (루트)
+1. **통합 CLI** (`run.py`): import → analyze → visualize 파이프라인 (자동 스킵)
+2. **데이터 레이어** (`data/`): init_db.py, importer.py
+3. **공통 데이터 조회** (`core/portfolio_data.py`): CLI/Web 공용 데이터 쿼리
+4. **분석 레이어** (`core/`): analyze_portfolio.py, evaluate_accumulative.py, interest_calculator.py
+5. **시각화 레이어** (`visualization/`): visualize_portfolio.py (Matplotlib 차트 4종, portfolio_data 소비)
+6. **웹 대시보드 레이어** (`streamlit_app/`): data_loader.py (캐싱 래퍼), [상세 문서](./streamlit_app/ARCHITECTURE.md)
 
-2. **분석 레이어** (`core/`)
-   - `analyze_portfolio.py`: 핵심 로직 (약 1000줄)
-   - `evaluate_accumulative.py`: 적립식 투자 평가
-   - yfinance API 호출
-   - ETF holdings/sectors 분석
-   - 자산 유형별 처리 (STOCK/BOND/CASH)
-
-3. **시각화 레이어** (`visualization/`)
-   - `visualize_portfolio.py`: Matplotlib 차트 생성
-   - 4종류 차트 (도넛, 막대 x2, 라인)
-
-4. **자동화 레이어** (`scripts/`)
-   - `run_monthly.py`: 통합 실행 스크립트
-   - `run_all_months.py`: 전체 월 일괄 실행
-   - 크론 연동 가능
-
-5. **웹 대시보드 레이어** (`streamlit_app/`)
-   - `app.py`: Streamlit 앱 엔트리포인트 (루트)
-   - `pages/`: 페이지별 렌더링 로직
-   - `components/`: Plotly 차트 컴포넌트
-   - `data_loader.py`: 데이터 로딩 및 캐싱
-   - `utils/`: 유틸리티 함수
-
-## 🔑 핵심 설계 결정
+## 핵심 설계 결정
 
 ### 1. 자산 유형 분류 (asset_type)
 
-#### 배경
-초기에는 주식형 ETF만 지원했으나, 사용자의 요청으로 채권과 현금성 자산을 추가함
-
-#### 구현
 - `STOCK`: yfinance로 ETF holdings/sectors 조회
 - `BOND`: yfinance 시도 → 실패 시 "Fixed Income" 섹터로 대체
 - `CASH`: yfinance 조회 없이 "Cash & Equivalents" 섹터로 직접 처리
-
-#### 코드 위치
-- `core/analyze_portfolio.py:440-540` - 자산 유형별 분석 함수
-- `analyze_stock_asset()`
-- `analyze_bond_asset()`
-- `analyze_cash_asset()`
+- 코드 위치: `core/analyze_portfolio.py:440-540` — `analyze_stock_asset()`, `analyze_bond_asset()`, `analyze_cash_asset()`
 
 ### 2. 기타 종목 (OTHER) 처리
 
-#### 문제
-yfinance의 `top_holdings`는 상위 10개만 제공하여, SPY(500개 종목) 중 10개만 분석하면 원금의 40%만 표시됨
+yfinance `top_holdings`는 상위 10개만 제공. `calculate_my_holdings()`에서 비중 합계 < 1.0이면 나머지를 "OTHER"로 자동 추가.
 
-#### 해결
-`calculate_my_holdings()` 함수에서 holdings 비중 합계를 계산하고, 1.0이 안되면 나머지를 "OTHER" 항목으로 자동 추가
-
-#### 코드
 ```python
 # core/analyze_portfolio.py:383-394
 if total_weight < 1.0:
     remaining_weight = 1.0 - total_weight
     remaining_amount = int(my_investment * remaining_weight)
-
     result.append({
         'source_ticker': etf_ticker,
         'stock_symbol': 'OTHER',
@@ -123,124 +79,39 @@ if total_weight < 1.0:
     })
 ```
 
+OTHER 항목은 SQL `ORDER BY`에서 `CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END`로 항상 마지막에 표시.
+
 ### 3. 같은 Ticker 통합
 
-#### 문제
-"ACE 미국국채30년액티브"와 "미국채 30년" 모두 TLT로 매핑되는데, 이름이 달라서 별도 항목으로 표시됨
+STOCK/BOND는 `stock_symbol`로 GROUP BY하여 자동 통합 (예: "ACE 미국국채30년액티브" + "미국채 30년" → TLT로 합산)
 
-#### 해결
-통합 holdings 계산 시 STOCK/BOND는 `stock_symbol`로 GROUP BY하여 같은 ticker는 자동 통합
-
-#### 코드
 ```sql
 -- core/analyze_portfolio.py:916-934
 SELECT
-    CASE
-        WHEN asset_type IN ('STOCK', 'BOND') THEN stock_symbol
-        ELSE stock_name
-    END as display_name,
-    asset_type,
-    SUM(my_amount) as amount
+    CASE WHEN asset_type IN ('STOCK', 'BOND') THEN stock_symbol ELSE stock_name END as display_name,
+    asset_type, SUM(my_amount) as amount
 FROM analyzed_holdings
 WHERE month_id = ? AND account_id IS NULL
-GROUP BY
-    CASE
-        WHEN asset_type IN ('STOCK', 'BOND') THEN stock_symbol
-        ELSE stock_name
-    END,
-    asset_type
+GROUP BY CASE WHEN asset_type IN ('STOCK', 'BOND') THEN stock_symbol ELSE stock_name END, asset_type
 ```
 
 ### 4. target_ratio 자동 계산
 
-#### 배경
-사용자가 매번 수동으로 계산하기 번거로움
-
-#### 구현
-`data/import_monthly_data.py`에서 계좌별 총액을 계산하고, 각 holding의 비중을 자동 계산
-
-#### 코드
-```python
-# data/import_monthly_data.py:98-109
-total_amount = sum(h['amount'] for h in holdings_list)
-
-for holding in holdings_list:
-    target_ratio = holding['amount'] / total_amount if total_amount > 0 else 0.0
-    # DB에 저장
-```
+`data/importer.py`의 `_import_portfolio()`에서 계좌별 총액 대비 각 holding의 비중을 자동 계산.
 
 ### 5. 한국 주식 실제 종목명 표시
 
-#### 배경
-한국 주식은 티커(예: 005930.KS)가 사람이 읽기 어렵고, 실제 회사명(삼성전자)을 보는 것이 직관적임
-
-#### 구현
-- `.KS` 확장자로 한국 주식 자동 감지
-- `stock_name` 필드를 활용하여 실제 회사명 표시
-- 티커는 괄호 안에 부가 정보로 표시
-
-#### 코드
-```python
-# core/analyze_portfolio.py:1040-1054
-if row['asset_type'] == 'STOCK' and row['stock_symbol'] and row['stock_symbol'].endswith('.KS'):
-    # 한국 주식: 실제 이름 표시
-    display_text = f"{row['stock_name']:<30} ({row['stock_symbol']:<10})"
-else:
-    # 미국 주식, 채권, 현금: ticker/이름 표시
-    display_text = f"{row['display_name']:<42}"
-```
+`.KS` 확장자로 한국 주식 자동 감지, `stock_name`으로 실제 회사명 표시 (예: `005930.KS` → `삼성전자 (005930.KS)`)
 
 ### 6. 다중 ETF 출처 추적
 
-#### 배경
-AAPL이나 MSFT 같은 종목이 SPY와 QQQ 모두에 포함되어 있을 때, 어떤 ETF에서 온 것인지 알 수 없음
+`GROUP_CONCAT(DISTINCT source_ticker)` SQL로 여러 ETF 출처 연결 (예: `AAPL [from: SPY,QQQ]`)
 
-#### 구현
-- `GROUP_CONCAT(DISTINCT source_ticker)` SQL 함수 사용
-- 쉼표로 여러 ETF 출처 연결
-- 2개 이상의 ETF에서 온 경우 `[from: SPY,QQQ]` 형태로 표시
+### 7. 개별 주식 감지
 
-#### 코드
-```python
-# core/analyze_portfolio.py:939-980
-query = """
-    SELECT
-        ...
-        GROUP_CONCAT(DISTINCT source_ticker) as source_tickers,
-        SUM(my_amount) as amount
-    FROM analyzed_holdings
-    WHERE month_id = ? AND account_id IS NULL
-    GROUP BY ...
-"""
+`quoteType == 'EQUITY'`이면 개별 주식으로 처리: 자기 자신 100% 보유, 섹터는 `info.get('sector')`에서 조회.
 
-# 표시 시
-source_info = f" [from: {row['source_tickers']}]" if pd.notna(row.get('source_tickers')) and ',' in str(row.get('source_tickers', '')) else ""
-```
-
-### 7. OTHER 항목 맨 마지막 표시
-
-#### 배경
-OTHER 항목이 금액이 많을 경우 상위 순위에 표시되면 실제 개별 종목을 보기 어려움
-
-#### 구현
-- SQL `ORDER BY`에 `CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END` 추가
-- 금액과 무관하게 OTHER을 항상 마지막으로 정렬
-- 터미널 출력 시 별도 섹션 "📦 [ETF 내 기타 종목 요약]"으로 분리
-
-#### 코드
-```python
-# core/analyze_portfolio.py:939-980
-ORDER BY
-    CASE WHEN stock_symbol = 'OTHER' THEN 1 ELSE 0 END,  -- OTHER을 마지막으로
-    amount DESC
-
-# 터미널 출력 시
-other_row = holdings_df_all[holdings_df_all['stock_symbol'] == 'OTHER']
-holdings_df_without_other = holdings_df_all[holdings_df_all['stock_symbol'] != 'OTHER']
-holdings_df_top = holdings_df_without_other.head(top_n)
-```
-
-## 📊 데이터베이스 설계
+## 데이터베이스 설계
 
 ### ER 다이어그램
 
@@ -250,251 +121,96 @@ months (월별 기본 정보)
 accounts (계좌)
   ↓ 1:N
   ├─ holdings (보유 항목: 원본 데이터)
-  └─ purchase_history (적립식 투자 매수 이력) [NEW]
+  └─ purchase_history (적립식 투자 매수 이력)
 
 months
   ↓ 1:N
 analyzed_holdings (분석 결과: 개별 종목)
 analyzed_sectors (분석 결과: 섹터 비중)
-analysis_metadata (분석 메타)
 
 purchase_history
   ↓ aggregation
-current_holdings_summary (뷰: 종목별 보유 수량 집계) [NEW]
+current_holdings_summary (뷰: 종목별 보유 수량 집계)
 ```
 
 ### 주요 테이블
 
 #### holdings
 - 사용자 입력 데이터 (YAML에서 임포트)
-- `asset_type`: STOCK/BOND/CASH
-- `interest_rate`: 현금 자산의 이자율
+- `asset_type`: STOCK/BOND/CASH, `interest_rate`: 현금 자산의 이자율
 
 #### analyzed_holdings
 - ETF 분석 결과
-- `source_ticker`: 원본 ETF (SPY, QQQ, TLT)
-- `stock_symbol`: 개별 종목 ticker (AAPL, MSFT, ...)
-- `stock_name`: 개별 종목 이름
-- `asset_type`: 자산 유형 (분석 시 상속)
+- `source_ticker`: 원본 ETF, `stock_symbol`: 개별 종목 ticker, `asset_type`: 자산 유형 (분석 시 상속)
 
 #### analyzed_sectors
-- 섹터별 비중
-- `sector_name`: technology, Fixed Income, Cash & Equivalents 등
-- `asset_type`: 자산 유형
+- 섹터별 비중: `sector_name` (technology, Fixed Income, Cash & Equivalents 등)
 
-#### purchase_history (NEW)
+#### purchase_history
 - **적립식 투자 매수 이력** (수량 기반 추적)
-- 핵심 필드:
-  - `ticker`: 종목 코드 (SPY, QQQ, AMZN, ...)
-  - `quantity`: 매수 수량 (REAL, 불변)
-  - `input_amount`: 투자 금액 (원화)
-  - `purchase_date`: 실제 매수일 (YYYY-MM-DD)
-  - `price_at_purchase`: 매수 당시 주가 (원화 환산, 선택적)
-  - `currency`: 통화 (KRW/USD)
-  - `exchange_rate`: 환율 (USD 종목만)
-  - `account_id`: 계좌 FK (필수, 계좌별 매수 이력 추적)
-  - `year_month`: 귀속 월 (예: "2025-11-purchase")
-  - `asset_type`: 자산 유형 (STOCK/BOND, CASH는 제외됨)
+- 핵심 필드: `ticker`, `quantity` (REAL, 불변), `input_amount`, `purchase_date`, `price_at_purchase` (감사용), `currency`, `exchange_rate`, `account_id` (FK, 필수), `year_month`, `asset_type`, `interest_rate`, `interest_type`
+- 설계 원칙: 수량 불변, price_at_purchase는 감사용만, 평가액은 항상 `quantity × current_price`로 실시간 계산
 
-- **설계 원칙**:
-  - 수량은 불변 (한번 저장되면 절대 변경 안 됨)
-  - price_at_purchase는 감사/추적용으로만 저장, 평가 계산에는 사용 안 함
-  - 평가액은 항상 `quantity × current_price`로 실시간 계산
-
-#### current_holdings_summary (뷰) (NEW)
-- purchase_history를 종목별로 집계한 읽기 전용 뷰
-- 필드:
-  - `ticker`: 종목 코드
-  - `asset_type`: 자산 유형
-  - `total_quantity`: 총 보유 수량
-  - `total_invested`: 총 투자 금액
-  - `avg_price`: 평균 매수가 (total_invested / total_quantity)
+#### current_holdings_summary (뷰)
+- purchase_history를 종목별로 집계: `ticker`, `total_quantity`, `total_invested`, `avg_price`
 
 ### account_id 컬럼의 의미
-
 - `account_id IS NULL`: 전체 포트폴리오 통합 분석 결과
 - `account_id = 1, 2, ...`: 개별 계좌 분석 결과
-- **purchase_history**: account_id 필수 (계좌별 매수 이력 추적)
+- purchase_history에서는 account_id 필수 (NULL이면 안 됨)
 
-## 🔧 주요 함수 설명
+## 주요 함수 설명
 
 ### core/analyze_portfolio.py
 
-#### fetch_etf_holdings(ticker)
-- yfinance로 ETF의 top_holdings 조회
-- 반환: DataFrame with ['Symbol', 'Name', 'Holding Percent']
-- 주의: 상위 10개만 제공됨
+| 함수 | 설명 |
+|------|------|
+| `fetch_etf_holdings(ticker)` | yfinance로 ETF top_holdings 조회 (상위 10개) |
+| `calculate_my_holdings(etf_ticker, my_investment, holdings_df)` | ETF holdings를 내 투자금액 기준으로 계산. 비중 합계 < 1.0이면 "OTHER" 추가 |
+| `analyze_stock_asset(ticker, name, amount, ...)` | 주식형 ETF/개별 주식 분석. `quoteType == 'EQUITY'`이면 개별 주식으로 처리 |
+| `analyze_bond_asset(...)` | 채권형 ETF 분석. yfinance 실패 시 Fixed Income 섹터로 대체 |
+| `analyze_cash_asset(...)` | 현금성 자산. yfinance 조회 없이 Cash & Equivalents 섹터로 직접 저장 |
+| `print_integrated_analysis(month_id, db_path)` | 통합 포트폴리오 분석 결과 출력 (Net Worth + 섹터 + holdings TOP 50) |
 
-#### calculate_my_holdings(etf_ticker, my_investment, holdings_df)
-- ETF holdings를 내 투자금액 기준으로 계산
-- **중요**: 비중 합계 < 1.0이면 "OTHER" 항목 자동 추가
-- 반환: List[Dict] with ['source_ticker', 'stock_symbol', 'stock_name', 'holding_percent', 'my_amount']
+### data/importer.py
 
-#### analyze_stock_asset(ticker, name, amount, month_id, account_id, db_path)
-- 주식형 ETF 또는 개별 주식 분석
-- **개별 주식 감지**: `quoteType == 'EQUITY'`인 경우 개별 주식으로 처리
-  - Holdings: 자기 자신을 100% 보유한 것으로 저장
-  - Sectors: `info.get('sector')`에서 섹터 조회
-- **ETF**: yfinance로 holdings/sectors 조회 → DB 저장
-- 코드 위치: `core/analyze_portfolio.py:440-540`
-- 예시:
-  ```python
-  # 개별 주식 감지
-  quote_type = info.get('quoteType', 'UNKNOWN')
+| 함수 | 설명 |
+|------|------|
+| `import_month(yaml_path, db_path, purchase_day, overwrite)` | YAML → DB 통합 임포트 (계좌/보유종목 + 매수기록) |
+| `get_historical_price(ticker, target_date, max_lookback_days=7)` | yfinance로 특정 날짜 종가 조회. 휴일 시 직전 영업일 |
+| `get_price_from_db(ticker, target_date, db_path)` | DB 과거 기록에서 유사 날짜(±7일) 주가 검색 (yfinance 폴백) |
+| `calculate_quantity(ticker, input_amount, year_month, purchase_day, db_path)` | 투자 금액 → 수량 계산. 환율 적용 (USD만) |
+| `save_purchase(...)` | purchase_history 테이블 저장. account_name으로 account_id 조회 |
 
-  if quote_type == 'EQUITY':
-      print(f"   📌 개별 주식으로 처리")
-      # Holdings: 자기 자신 100%
-      holdings_data = [{
-          'source_ticker': mapped_ticker,
-          'stock_symbol': mapped_ticker,
-          'stock_name': name,
-          'holding_percent': 1.0,
-          'my_amount': amount
-      }]
-      save_analyzed_holdings(month_id, account_id, holdings_data, db_path, asset_type='STOCK')
+### core/portfolio_data.py (공통 데이터 조회 레이어)
 
-      # Sectors: info에서 조회
-      sector_name = info.get('sector', 'Unknown')
-      if sector_name and sector_name != 'Unknown':
-          sectors_data = [{
-              'source_ticker': mapped_ticker,
-              'sector_name': sector_name,
-              'sector_percent': 1.0,
-              'my_amount': amount
-          }]
-          save_analyzed_sectors(month_id, account_id, sectors_data, db_path, asset_type='STOCK')
-      return
-
-  # ETF인 경우 기존 로직
-  holdings_df = fetch_etf_holdings(mapped_ticker)
-  ...
-  ```
-
-#### analyze_bond_asset(...)
-- 채권형 ETF 분석
-- yfinance 시도 → 실패 시 대체 로직 (Fixed Income 섹터)
-
-#### analyze_cash_asset(...)
-- 현금성 자산 처리
-- yfinance 조회 없이 직접 "Cash & Equivalents" 섹터로 저장
-
-#### print_integrated_analysis(month_id, db_path)
-- 통합 포트폴리오 분석 결과 출력
-- Net Worth + 통합 섹터 + 통합 holdings TOP 50
-- 한국 주식(.KS)은 실제 종목명 표시
-- OTHER은 별도 섹션으로 맨 마지막에 표시
-
-### visualization/visualize_portfolio.py
-
-#### create_asset_allocation_chart(net_worth, output_path)
-- 도넛 차트: 주식형/채권형/현금형 비중
-- 중앙에 총 자산 표시
-
-#### create_sector_chart(sectors_df, output_path)
-- 막대 차트: 섹터별 금액 분포
-
-#### create_top_holdings_chart(holdings_df, output_path, top_n=50)
-- 막대 차트: 상위 50개 보유 항목 (초장형 레이아웃)
-- 한국 주식(.KS)은 실제 종목명 표시
-- OTHER은 회색으로 맨 마지막에 표시 (구분선 포함)
-- 상위 3개 항목은 테두리로 강조
-- 자산 유형별 색상 구분 (주식/채권/현금/기타)
-
-#### create_asset_trend_chart(db_path, output_path, months=6)
-- 라인 차트: 월별 총 자산 추이
-- 최소 2개월 데이터 필요
-
-### data/import_monthly_purchases.py
-
-#### import_monthly_purchases(yaml_path, db_path, purchase_day)
-- 적립식 투자 데이터 임포트 (YAML → purchase_history)
-- **중요**: 기존 YAML 구조(`accounts > holdings`)를 그대로 사용
-- **purchase_day 우선순위**: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
-  - YAML 최상위에 `purchase_day: 18` 지정 시 CLI 파라미터보다 우선 적용
-  - 미지정 시 CLI 파라미터(기본값 26) 사용
-- 핵심 로직:
-  ```python
-  # YAML에서 purchase_day 우선 읽기
-  yaml_purchase_day = data.get('purchase_day')
-  if yaml_purchase_day is not None:
-      purchase_day = int(yaml_purchase_day)
-
-  # year_month 이중 형식
-  file_stem = Path(yaml_path).stem  # "2025-11-purchase"
-  year_month_db = file_stem  # DB 조회용
-  year_month_date = file_stem.replace('-purchase', '')  # 날짜 생성용
-
-  # CASH 제외
-  if asset_type == 'CASH':
-      continue
-
-  # 수량 계산
-  calc_result = calculate_quantity(ticker, amount, year_month_date, purchase_day, db_path)
-
-  # DB 저장 (account_id 반드시 포함)
-  save_purchase(ticker, asset_type, year_month_db, calc_result, amount, account_name, ...)
-  ```
-
-#### get_historical_price(ticker, target_date, max_lookback_days=7)
-- yfinance로 특정 날짜의 종가 조회
-- 휴일인 경우 직전 영업일 자동 조회
-- 반환: `(실제_날짜, 종가, 통화)` 또는 `None`
-
-#### get_price_from_db(ticker, target_date, db_path)
-- DB의 과거 매수 기록에서 유사 날짜(±7일) 주가 검색
-- yfinance 실패 시 폴백으로 사용
-- 반환: `주가(KRW)` 또는 `None`
-
-#### calculate_quantity(ticker, input_amount, year_month, purchase_day, db_path)
-- 투자 금액 기준으로 매수 수량 계산
-- 로직:
-  1. 매수 기준일 생성 (예: "2025-11-26")
-  2. 과거 주가 조회 (yfinance 우선 → DB 폴백)
-  3. 환율 적용 (USD 종목만)
-  4. 수량 계산: `quantity = input_amount / price_krw`
-- 반환: `{'purchase_date', 'quantity', 'price_krw', 'leftover', 'currency', 'exchange_rate'}`
-
-#### save_purchase(ticker, asset_type, year_month, calc_result, input_amount, account_name, note, db_path)
-- purchase_history 테이블에 저장
-- **중요**: account_name으로 account_id 조회 (year_month_db 사용)
-- 계좌를 찾지 못하면 account_id는 NULL (그러나 이는 비정상 상황)
+| 함수 | 설명 |
+|------|------|
+| `get_month_id(year_month, db_path)` | year_month → month_id 조회 |
+| `get_available_months(db_path)` | 사용 가능한 월 목록 (내림차순) |
+| `calc_cash_value(db_path, month_id, up_to_month)` | CASH 자산 이자 반영 평가액 계산 |
+| `get_asset_allocation(month_id, db_path)` | 자산유형별 배분 (analyzed_holdings 기반) |
+| `get_sector_distribution(month_id, db_path, limit)` | 섹터별 분포 (상위 N개) |
+| `get_top_holdings(month_id, db_path, limit)` | 상위 보유종목 (OTHER 제외) |
+| `get_cumulative_value(up_to_month, db_path)` | 누적 투자원금/평가금액/수익 (실시간 시세) |
+| `get_asset_trend(db_path, months)` | 월별 자산 추이 DataFrame |
 
 ### core/evaluate_accumulative.py
 
-#### evaluate_holdings(db_path)
-- purchase_history에서 종목별 보유 수량 집계
-- 현재가 조회 (yfinance)
-- 평가액 계산: `current_value = quantity × current_price`
-- 손익 계산: `profit = current_value - invested`
-- 수익률 계산: `return_rate = (profit / invested) × 100`
-- 반환: DataFrame with ['ticker', 'quantity', 'invested', 'current_price', 'current_value', 'profit', 'return_rate']
+| 함수 | 설명 |
+|------|------|
+| `evaluate_holdings(db_path)` | 종목별 보유 수량 집계 → 현재가 조회 → 평가액/손익/수익률 계산 |
+| `get_current_price(ticker)` | yfinance 현재가 조회. 한국 주식: KRW, 미국: USD → KRW 환산 |
 
-#### get_current_price(ticker)
-- yfinance로 현재가 조회
-- 한국 주식(.KS/.KQ): KRW로 반환
-- 미국 주식/ETF: USD → KRW 환산
-- 반환: `현재가(KRW)`
-
-## 📈 수익률 계산 상세
+## 수익률 계산 상세
 
 ### 핵심 공식
 
-모든 모듈에서 동일한 단순 수익률(Simple Return) 공식을 사용:
+모든 모듈에서 동일한 단순 수익률(Simple Return) 공식 사용:
 
 ```
 수익률(%) = (평가액 - 투자액) / 투자액 × 100
 평가액 = 보유수량 × 현재가(KRW)
-```
-
-### 수익률 계산 파이프라인
-
-```
-YAML(투자액)
-  ↓ import_monthly_purchases.py
-과거 주가 조회 → 수량 계산 (투자액 / 주당가격KRW) → purchase_history 저장
-  ↓ evaluate_accumulative.py 또는 data_loader.py
-DB에서 수량·투자액 조회 → 현재가 조회 → 평가액 산출 → 수익률 계산
 ```
 
 ### 수익률 계산 지점 (6곳)
@@ -510,41 +226,24 @@ DB에서 수량·투자액 조회 → 현재가 조회 → 평가액 산출 → 
 
 ### 현재가 조회 방식 차이
 
-| 모듈 | 함수 | 반환값 | 환율 처리 |
-|---|---|---|---|
-| `evaluate_accumulative` | `get_current_price(ticker)` | **KRW** (환율 적용 완료) | 내부에서 `USD × 환율` 적용 |
-| `price_fetcher` | `get_current_price(ticker)` | **원시 가격** (USD/KRW 그대로) | 호출자가 별도 환율 적용 |
+| 모듈 | 반환값 | 환율 처리 |
+|---|---|---|
+| `evaluate_accumulative.get_current_price()` | KRW (환율 적용 완료) | 내부에서 USD × 환율 적용 |
+| `price_fetcher.get_current_price()` | 원시 가격 (USD/KRW 그대로) | 호출자가 별도 환율 적용 |
 
-### ⚠️ 알려진 불일치 사항
+### 알려진 불일치 사항
 
-1. **환율 기본값 차이**
-   - `evaluate_accumulative`: 기본값 **1,450원**
-   - `data_loader`: 기본값 **1,400원**
-   - 환율 조회 실패 시 두 모듈의 수익률이 ~3.4% 차이 발생
+1. **환율 기본값**: 모든 모듈에서 `DEFAULT_EXCHANGE_RATE = 1450` 사용 (`core/portfolio_data.py`에서 정의)
+2. **현재가 조회 실패 시**: `evaluate_accumulative`는 해당 종목 제외, `data_loader`는 원금=평가액(수익률 0%)
+3. **account_id NULL**: `evaluate_accumulative`는 영향 없음, `data_loader`는 accounts JOIN으로 누락 가능
 
-2. **현재가 조회 실패 시 동작 차이**
-   - `evaluate_accumulative`: 해당 종목을 결과에서 **제외**
-   - `data_loader`: 원금을 평가액으로 사용 (**수익률 0%**)
-   - 같은 데이터에서 서로 다른 전체 수익률이 산출될 수 있음
-
-3. **account_id NULL 레코드**
-   - `purchase_history`에 `account_id`가 NULL인 레코드가 있으면 JOIN 쿼리에서 누락됨
-   - `evaluate_accumulative`는 account JOIN 없이 직접 조회하므로 영향 없음
-   - `data_loader`는 accounts JOIN을 사용하므로 해당 레코드 누락
-
-## 🧪 테스트
+## 테스트
 
 ### 실행 방법
 
 ```bash
-# 전체 테스트
-.venv/bin/python -m pytest tests/ -v
-
-# 특정 파일만
-.venv/bin/python -m pytest tests/test_profit_rate.py -v
-
-# 특정 클래스만
-.venv/bin/python -m pytest tests/test_consistency.py::TestExchangeRateConsistency -v
+.venv/bin/pytest tests/ -v
+.venv/bin/pytest tests/test_profit_rate.py -v
 ```
 
 ### 테스트 구조
@@ -567,703 +266,89 @@ tests/
 | 픽스처 | 설명 |
 |---|---|
 | `initialized_db` | 빈 스키마만 생성된 DB |
-| `populated_db` | 2개월(2025-01, 2025-02), 2개 계좌(ISA, 연금저축), 미국/한국 주식 + CASH |
+| `populated_db` | 2개월, 2개 계좌, 미국/한국 주식 + CASH |
 | `mock_yfinance` | yfinance.Ticker mock (SPY=610, QQQ=520, KODEX200=36000, KRW=X=1430) |
 | `mock_yf_download` | yfinance.download mock (일괄 조회) |
 
 ### 테스트 작성 시 주의
 
-- 외부 API(yfinance) 호출은 반드시 mock 처리
-- `data_loader.py`의 함수들은 `st.cache_data` 데코레이터 적용 → `__wrapped__`로 원본 함수 호출
+- 외부 API(yfinance)는 반드시 mock 처리
+- `data_loader.py`의 캐시 데코레이터 → `__wrapped__`로 원본 함수 호출
 - `data_loader`에서 `get_current_price`, `get_multiple_prices`는 함수 내부 import → mock 경로는 `streamlit_app.utils.price_fetcher`
 
-## 🚨 주의사항
+## 주의사항
 
 ### yfinance API 제한
 
-1. **top_holdings는 상위 10개만 제공**
-   - 해결: "OTHER" 항목으로 나머지 보정
-
-2. **TLT 등 채권 ETF는 holdings 데이터 없음**
-   - 해결: "Fixed Income" 섹터로 대체
-
-3. **환율 데이터 (KRW=X) 조회 실패 가능**
-   - 해결: 기본값 1,450원 사용
-
-4. **개별 주식은 funds_data 속성 없음**
-   - 해결: quoteType 필드로 ETF/개별주식 구분, 개별 주식은 100% 자기 보유로 처리
-
-5. **과거 주가 조회 실패 가능** (휴일, 상장 전 등)
-   - 해결: DB 폴백 (과거 매수 기록에서 유사 날짜 검색)
+1. **top_holdings 상위 10개만** → "OTHER" 항목으로 보정
+2. **채권 ETF holdings 없음** → "Fixed Income" 섹터 대체
+3. **환율(KRW=X) 조회 실패 가능** → 기본값 1,450원
+4. **개별 주식 funds_data 없음** → quoteType으로 구분
+5. **과거 주가 조회 실패 가능** → DB 폴백
 
 ### DB 무결성
 
-1. **months 테이블의 year_month는 UNIQUE**
-   - 같은 월 데이터 재임포트 시 `--overwrite` 필수
+1. **months.year_month UNIQUE** → 재임포트 시 `--overwrite` 필수
+2. **account_id IS NULL** = 전체 분석 (계좌별 분석과 별도 저장)
+3. **analyzed_* overwrite 시 DELETE** → 중복 저장 방지
+4. **purchase_history.account_id 필수** (NULL 금지)
+5. **year_month 이중 형식**: DB 조회용 `"2025-11-purchase"` vs 날짜 생성용 `"2025-11"` — 혼동 금지
 
-2. **account_id IS NULL = 전체 분석**
-   - 계좌별 분석과 전체 분석은 별도로 저장
+### 적립식 투자 핵심 규칙
 
-3. **analyzed_* 테이블은 overwrite 시 DELETE**
-   - 분석 결과가 중복 저장되지 않도록 주의
+- **CASH 제외**: purchase_history에 CASH는 저장되지 않음 (`quantity = amount, price = 1.0`)
+- **파일 명명**: 일반 `2025-11.yaml`, 적립식 `2025-11-purchase.yaml`
+- **purchase_day 우선순위**: YAML `purchase_day` > CLI `--purchase-day` > 기본값 26
 
-4. **purchase_history의 account_id는 필수** (NULL이면 안 됨)
-   - year_month 불일치로 account_id가 NULL이 되는 경우 주의
-   - DB 조회용 year_month ("2025-11-purchase")와 날짜 생성용 year_month ("2025-11")를 구분
+## 트러블슈팅 가이드
 
-5. **year_month 이중 형식 주의**
-   - 파일명: `2025-11-purchase.yaml`
-   - DB에 저장된 year_month: `2025-11-purchase` (months, accounts 테이블)
-   - purchase_date 생성: `2025-11` + `-26` → `2025-11-26`
-   - **절대 혼동 금지**: account_id 조회 시 전자, 날짜 생성 시 후자 사용
-
-## 📝 개발 이력
-
-### Phase 1: 기본 시스템 구축
-- SQLite DB 설계
-- YAML 임포트
-- yfinance 연동
-- 주식형 ETF 분석
-
-### Phase 2: 자산 유형 확장
-- asset_type 컬럼 추가 (STOCK/BOND/CASH)
-- DB 마이그레이션 스크립트
-- 자산 유형별 분석 함수
-
-### Phase 3: 통합 Net Worth 뷰
-- 위험/안전/현금 자산 구분
-- 통합 섹터 비중
-- 통합 holdings (초기 TOP 30)
-
-### Phase 4: 기타 종목 처리
-- yfinance top_holdings 한계 해결
-- "OTHER" 항목 자동 추가
-- 원금과 평가액 일치
-
-### Phase 5: Ticker 통합
-- 같은 ticker는 하나로 합침
-- TLT 200,000 + 100,000 → 300,000
-
-### Phase 6: 시각화
-- Matplotlib 차트 4종
-- 자산 배분 도넛
-- 섹터/holdings 막대
-- 자산 추이 라인
-
-### Phase 7: 자동화
-- run_monthly.py 통합 스크립트
-- 크론 연동 가능
-- 로깅 추가
-
-### Phase 8: 상세 분석 및 시각화 개선
-- TOP 30 → TOP 50 확장
-- 한국 주식 실제 종목명 표시 (.KS 감지)
-- 다중 ETF 출처 추적 (GROUP_CONCAT)
-- OTHER 항목 맨 마지막 표시 (SQL ORDER BY 개선)
-- 초장형 차트 레이아웃 (16x70 figsize)
-- 상위 3개 항목 테두리 강조
-- requirements.txt 추가
-
-### Phase 9: 개별 주식 지원 (Individual Stocks)
-- **문제**: AMZN, GOOGL, TSLA 등 개별 주식에서 "No Fund data found" 에러 발생
-- **원인**: 개별 주식은 ETF가 아니므로 `funds_data` 속성이 없음
-- **해결**: `quoteType` 필드로 ETF와 개별 주식 자동 구분
-  - `quoteType == 'EQUITY'` → 개별 주식
-  - `quoteType == 'ETF'` → ETF
-- **구현**: `analyze_stock_asset()` 함수 수정
-  - 개별 주식: 자기 자신을 100% 보유, 섹터는 `info.get('sector')`
-  - ETF: 기존 로직 유지 (funds_data.top_holdings)
-
-### Phase 10: 적립식 투자 추적 시스템 (Accumulative Investment)
-- **요구사항**:
-  - 월별 투자 금액 입력 → 수량 자동 계산 → 현재가 기준 평가
-  - 수량은 불변 (한번 저장되면 변경 안 됨)
-  - 과거 주가 자동 조회 (특정 날짜, 기본 26일)
-  - 기존 YAML 구조(`accounts > holdings`) 유지 (절대 변경 금지)
-
-- **구현**:
-  1. **DB 스키마 추가** (`migrate_add_purchase_history.py`):
-     - `purchase_history` 테이블: ticker, quantity, input_amount, purchase_date, price_at_purchase, account_id
-     - `current_holdings_summary` 뷰: 종목별 보유 수량 집계
-
-  2. **수량 계산 스크립트** (`import_monthly_purchases.py`):
-     - YAML 파일에서 `accounts > holdings` 읽기
-     - 과거 주가 조회 (yfinance 우선, 실패 시 DB 폴백)
-     - 수량 계산: `amount / price_krw`
-     - purchase_history 테이블에 저장
-     - **중요**: CASH 자산은 자동 제외 (수량 개념 없음)
-
-  3. **평가 스크립트** (`evaluate_accumulative.py`):
-     - 종목별 보유 수량 집계
-     - 현재가 조회
-     - 평가액 계산: `quantity × current_price`
-     - 손익 및 수익률 계산
-
-- **핵심 설계 결정**:
-  - **year_month 이중 형식**:
-    - `year_month_db = "2025-11-purchase"` (DB 조회용, months/accounts 테이블)
-    - `year_month_date = "2025-11"` (날짜 생성용, purchase_date 생성)
-  - **account_id 필수**: purchase_history 테이블에 account_id 저장 (계좌별 매수 이력 추적)
-  - **price_at_purchase 선택적**: 감사용으로만 저장, 계산에는 사용 안 함
-
-- **에러 수정**:
-  1. **account_id NULL 문제**:
-     - 원인: year_month 불일치 (months 테이블: "2025-11-purchase", 조회: "2025-11")
-     - 해결: year_month를 DB 조회용과 날짜 생성용으로 분리
-
-  2. **purchase_date 오류** ("2025-11-purchase-26"):
-     - 원인: 날짜 생성 시 전체 파일명 사용
-     - 해결: year_month_date에서 "-purchase" 제거
-
-- **파일 명명 규칙**:
-  - 일반 월별 포트폴리오: `2025-11.yaml`, `2025-12.yaml`
-  - 적립식 투자 데이터: `2025-11-purchase.yaml`, `2025-12-purchase.yaml`
-
-- **YAML 파일 내 purchase_day 지정** (선택적):
-  ```yaml
-  purchase_day: 18          # 선택적. 없으면 CLI 기본값(26) 사용
-  accounts:
-    - name: 투자 (절세)
-      ...
-  ```
-  - 우선순위: `YAML purchase_day` > `CLI --purchase-day` > `기본값 26`
-
-### Phase 11: Streamlit 웹 대시보드 (Web Dashboard)
-
-- **요구사항**:
-  - 인터랙티브 웹 기반 포트폴리오 분석 대시보드
-  - CLI 대신 브라우저에서 직관적으로 데이터 확인
-  - 실시간 차트 인터랙션 (줌, 호버, 드릴다운)
-  - 성능 최적화 (캐싱, Top N 제한)
-
-- **아키텍처 설계**:
-  ```
-  app.py (메인)
-  └── streamlit_app/
-      ├── config.py              # 설정 (색상, 캐싱 등)
-      ├── data_loader.py         # DB 데이터 로딩 + 캐싱
-      ├── components/
-      │   └── charts.py          # Plotly 차트
-      ├── pages/
-      │   ├── monthly_comparison.py    # 월별 투자 비교
-      │   ├── account_portfolio.py     # 계좌별 포트폴리오
-      │   └── total_portfolio.py       # 전체 포트폴리오
-      └── utils/
-          ├── formatters.py      # 숫자/날짜 포맷팅
-          └── state.py           # 세션 상태 관리
-  ```
-
-- **주요 구현**:
-
-  1. **월별 투자 비교 페이지**:
-     - 4개 Metric Cards: 총자산, 총원금, 총수익, 수익률
-     - Waterfall Chart: [전월 자산] → [추가 입금] → [평가 손익] → [금월 자산]
-     - 월별 비교 테이블 (최근 3개월)
-     - 자산 추이 Line Chart (전체 기간)
-
-  2. **계좌별 포트폴리오 페이지**:
-     - 계좌별 Expander (접기/펼치기)
-     - 2개 탭: 보유 종목 vs ETF 투시 분석
-     - ETF 투시 토글 (기본 OFF, 성능 최적화)
-     - 섹터 Pie Chart
-     - 한국 주식 자동 종목명 표시 (예: 삼성전자 (005930.KS))
-     - OTHER은 맨 하단 표시
-
-  3. **전체 포트폴리오 페이지**:
-     - 자산 유형별 요약 (STOCK/BOND/CASH)
-     - Sunburst Chart (계층적 구조, 클릭 시 드릴다운)
-     - 종목 검색 기능 (직접 보유 + ETF 내 간접 보유 통합)
-     - 통합 섹터 비중 Horizontal Bar Chart
-     - Top 20 Holdings 테이블
-
-- **성능 최적화**:
-  - **캐싱 전략**: `@st.cache_data` 데코레이터 사용
-    - 월별 데이터: 1시간 TTL
-    - ETF 데이터: 24시간 TTL
-    - 정적 데이터: 7일 TTL
-  - **Top N 제한**: ETF 투시 10개, 전체 보유 20개
-  - **조건부 로딩**: ETF 투시 토글 방식 (기본 OFF → 데이터 로딩 안 함)
-  - **DB 쿼리 최적화**: 필요한 컬럼만 SELECT, 인덱스 활용
-
-- **기술 스택**:
-  - Streamlit 1.52.2: 웹 프레임워크
-  - Plotly 6.5.0: 인터랙티브 차트
-  - Pandas: 데이터 처리
-  - SQLite: DB (기존 활용)
-
-- **핵심 설계 결정**:
-  1. **캐싱**: 같은 데이터 재요청 시 DB 쿼리 생략 → 성능 향상
-  2. **상태 관리**: `st.session_state`로 선택한 월 유지 (페이지 이동 시)
-  3. **비중 계산**: 계좌별로 재계산 (holdings의 target_ratio 대신)
-  4. **차트 라이브러리**: Plotly (matplotlib 대신) → 인터랙티브 기능
-  5. **레이아웃**: Wide 레이아웃 + 4컬럼 Metrics → 화면 최대 활용
-
-- **문서화**:
-  - `streamlit_app/README.md`: 사용 가이드
-  - `streamlit_app/ARCHITECTURE.md`: 아키텍처 문서
-  - `designs/`: UI 디자인 문서 (5개 파일)
-    - 00-layout-overview.md
-    - 01-monthly-comparison.md
-    - 02-account-portfolio.md
-    - 03-total-portfolio.md
-    - 04-components.md
-
-- **실행 방법**:
-  ```bash
-  # Streamlit 앱 실행
-  streamlit run app.py
-
-  # 브라우저 접속
-  # http://localhost:8501
-  ```
-
-- **개발 중 피드백 및 개선사항**:
-  - Waterfall Chart 높이 증가 (400 → 500px)
-  - 비중 계산을 계좌별로 변경 (전체 대비 → 계좌 내 비중)
-  - 한국 주식 (.KS) 자동 종목명 표시
-  - OTHER 항목 맨 하단 정렬
-  - ETF 투시 분석 원 그래프 추가 (예정)
-  - URL 기반 탭 네비게이션 (예정)
-  - 키보드 단축키 (Cmd/Ctrl+1,2,3) (예정)
-
-## 🔮 향후 개선 방향
-
-### 1. 텔레그램 봇 연동
-
-```python
-# 예시 코드
-import telegram
-
-def send_charts_to_telegram(bot_token, chat_id, charts_dir):
-    bot = telegram.Bot(token=bot_token)
-    for chart in Path(charts_dir).glob("*.png"):
-        bot.send_photo(chat_id=chat_id, photo=open(chart, 'rb'))
-```
-
-### 2. 월별 변화 추적 (MoM)
-
-- 이전 월 데이터와 비교
-- 수익률 계산
-- 변동률 표시
-
-### 3. LLM 연동 (Gemini/GPT)
-
-AI 분석 리포트 자동 생성:
-
-#### Persona: "Portfolio Sentinel"
-- 15년 경력의 냉철하고 객관적인 퀀트 자산 운용가
-- 숫자와 데이터에 기반한 논리적 분석
-- 구체적인 액션 아이템 제시
-
-#### Analysis Guidelines
-1. **포트폴리오 건전성 진단**
-   - 섹터 쏠림 현상 (특정 섹터 40% 초과 시 경고)
-   - ETF 중복 투자 (SPY + QQQ → AAPL/MSFT 중복 노출)
-   - 자산 배분 (주식/채권/현금 비율 평가)
-
-2. **기간별 성과 요약**
-   - WoW, MoM 수익률 및 평가손익
-   - Best/Worst 종목 분석
-
-3. **대응 전략**
-   - 리밸런싱 제안 (목표 비중 vs 실제 비중)
-   - 포지션 조정 권고
-
-#### Implementation
-```python
-import google.generativeai as genai
-
-def generate_analysis_report(portfolio_data, month_id, db_path):
-    # 데이터 준비
-    net_worth = calculate_net_worth(month_id, db_path)
-    sectors = calculate_integrated_sectors(month_id, db_path)
-
-    # 프롬프트 생성
-    prompt = f"""
-    당신은 Portfolio Sentinel입니다.
-    다음 데이터를 분석하여 리포트를 작성하세요:
-
-    - 총 자산: {net_worth['total']:,}원
-    - 섹터 비중: {sectors.to_dict()}
-    ...
-    """
-
-    # LLM 호출
-    model = genai.GenerativeModel('gemini-1.5-pro')
-    response = model.generate_content(prompt)
-    return response.text
-```
-
-### 4. 리밸런싱 추천
-
-- 목표 비중과 실제 비중 비교
-- 매수/매도 추천
-
-### 5. 웹 대시보드
-
-- Streamlit 사용
-- 실시간 차트 조회
-- 월별 비교
-
-## 🐛 트러블슈팅 가이드
-
-### 문제: 총 자산이 원금보다 적음
-
-#### 진단
+### 총 자산이 원금보다 적음
 ```bash
 sqlite3 portfolio.db "SELECT asset_type, SUM(my_amount) FROM analyzed_holdings WHERE month_id = X AND account_id IS NULL GROUP BY asset_type"
 ```
+→ "OTHER" 항목 추가 로직 확인 (`calculate_my_holdings()`)
 
-#### 원인
-- yfinance top_holdings가 상위 10개만 제공
+### 같은 ticker가 중복 표시
+→ GROUP BY에서 stock_name 대신 stock_symbol 사용 확인 (`calculate_integrated_holdings()`)
 
-#### 해결
-- "OTHER" 항목 추가 로직 확인
-- `calculate_my_holdings()` 함수의 `total_weight < 1.0` 조건 확인
+## 개발 이력
 
-### 문제: 같은 ticker가 중복 표시
+| Phase | 내용 |
+|-------|------|
+| 1 | 기본 시스템 구축 (SQLite, YAML 임포트, yfinance 연동) |
+| 2 | 자산 유형 확장 (STOCK/BOND/CASH) |
+| 3 | 통합 Net Worth 뷰 |
+| 4 | OTHER 종목 처리 (yfinance top_holdings 보정) |
+| 5 | Ticker 통합 (같은 ETF 합산) |
+| 6 | Matplotlib 시각화 4종 |
+| 7 | 자동화 (run_monthly.py, 크론) |
+| 8 | 상세 분석 개선 (TOP 50, 한국 주식명, 다중 ETF 추적) |
+| 9 | 개별 주식 지원 (quoteType 감지) |
+| 10 | 적립식 투자 추적 시스템 (purchase_history, evaluate_accumulative) |
+| 11 | Streamlit 웹 대시보드 (Plotly 차트, 캐싱, 3페이지) |
+| 12 | "전체 기간" 통합 기능 |
+| 13 | 디렉터리 재구성 + 키보드 단축키 |
+| 14 | 리팩터링: 임포트 통합(`data/importer.py`), 스크립트 통합(`run.py`), 공통 데이터 레이어(`core/portfolio_data.py`), `analysis_metadata` 제거, 환율 기본값 1450 통일 |
 
-#### 진단
-```bash
-sqlite3 portfolio.db "SELECT display_name, COUNT(*) FROM (통합 holdings 쿼리) GROUP BY display_name HAVING COUNT(*) > 1"
-```
-
-#### 원인
-- GROUP BY에서 stock_name 사용
-
-#### 해결
-- stock_symbol로 GROUP BY 변경
-- `calculate_integrated_holdings()` 함수 확인
-
-### 문제: 차트 생성 실패
-
-#### 진단
-- Matplotlib 설치 확인: `pip show matplotlib`
-- 폰트 경고는 무시 가능 (차트는 생성됨)
-
-#### 해결
-```bash
-pip install matplotlib
-python visualize_portfolio.py --month 2025-12
-```
-
-## 📚 참고 자료
-
-### yfinance 문서
-- https://github.com/ranaroussi/yfinance
-- `etf.funds_data.top_holdings`
-- `etf.funds_data.sector_weightings`
-
-### SQLite 문서
-- https://www.sqlite.org/docs.html
-- CASE WHEN, GROUP BY, NULL handling
-
-### Matplotlib 문서
-- https://matplotlib.org/
-- pie chart, bar chart, line chart
-
-## ✅ 체크리스트
+## 체크리스트
 
 새로운 기능 추가 시:
 - [ ] 테이블 스키마 변경 → `data/init_db.py` 업데이트
-- [ ] DB 마이그레이션 스크립트 작성 (필요 시)
 - [ ] 핵심 로직 추가 (`core/` 또는 `data/`)
-- [ ] 테스트 데이터 (YAML) 준비
-⏺ 수익률 계산 로직 검토 결과              
-                                                                                                                                           
-  핵심 공식 (모든 곳에서 동일)
-                                                                                                                                           
-  수익률 = (평가액 - 투자액) / 투자액 × 100                                               
-  평가액 = 보유수량 × 현재가(원화)                                                                                                         
-                                                                                                                                           
-  이 공식은 **단순 수익률(Simple Return)**이며, 6개 지점에서 일관되게 사용됩니다.                                                          
-                                                                                                                                           
-  수익률 계산 파이프라인                                                                                                                   
-
-  YAML(투자액) → 과거주가 조회 → 수량 계산(투자액/주가) → DB 저장
-                                                            ↓
-                수익률 표시 ← 손익 계산 ← 현재가 조회 ← DB에서 수량·투자액 조회
-
-  수익률 계산이 존재하는 6개 지점
-
-  ┌──────────────────────────────────────────────┬─────────────────┐
-  │                     파일                     │      용도       │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ core/evaluate_accumulative.py:107-109        │ CLI 적립식 평가 │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:221-222         │ 월별 요약       │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:614-619         │ 계좌별 종목     │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:885-887         │ 통합 포트폴리오 │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:1284-1286       │ 월별 비교       │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/utils/price_fetcher.py:116-118 │ 유틸 함수       │
-  └──────────────────────────────────────────────┴─────────────────┘
-
-  잠재적 이슈 포인트
-
-  1. 환율 처리 불일치 가능성: 매수 시점 환율과 현재 환율이 다르므로 환율 변동 자체가 수익률에 반영됨 (의도된 것인지 확인 필요)
-  2. CASH 처리: quantity = amount, price = 1.0으로 처리 — CASH는 항상 수익률 0%
-  3. 환율 기본값: 조회 실패 시 1,450원 하드코딩 — 실제 환율과 차이 발생 가능
-  4. 현재가 조회 필드 우선순위: price_fetcher.py에서 last_price → regularMarketPrice → currentPrice → previousClose 순서로 조회하는데,
-  장중/장후에 따라 다른 값 반환 가능
-
-  어떤 부분에서 버그가 의심되는지 좀 더 구체적으로 알려주시면 해당 부분을 깊이 파고들 수 있습니다.
-⏺ 수익률 계산 로직 검토 결과              
-                                                                                                                                           
-  핵심 공식 (모든 곳에서 동일)
-                                                                                                                                           
-  수익률 = (평가액 - 투자액) / 투자액 × 100                                               
-  평가액 = 보유수량 × 현재가(원화)                                                                                                         
-                                                                                                                                           
-  이 공식은 **단순 수익률(Simple Return)**이며, 6개 지점에서 일관되게 사용됩니다.                                                          
-                                                                                                                                           
-  수익률 계산 파이프라인                                                                                                                   
-
-  YAML(투자액) → 과거주가 조회 → 수량 계산(투자액/주가) → DB 저장
-                                                            ↓
-                수익률 표시 ← 손익 계산 ← 현재가 조회 ← DB에서 수량·투자액 조회
-
-  수익률 계산이 존재하는 6개 지점
-
-  ┌──────────────────────────────────────────────┬─────────────────┐
-  │                     파일                     │      용도       │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ core/evaluate_accumulative.py:107-109        │ CLI 적립식 평가 │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:221-222         │ 월별 요약       │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:614-619         │ 계좌별 종목     │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:885-887         │ 통합 포트폴리오 │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/data_loader.py:1284-1286       │ 월별 비교       │
-  ├──────────────────────────────────────────────┼─────────────────┤
-  │ streamlit_app/utils/price_fetcher.py:116-118 │ 유틸 함수       │
-  └──────────────────────────────────────────────┴─────────────────┘
-
-  잠재적 이슈 포인트
-
-  1. 환율 처리 불일치 가능성: 매수 시점 환율과 현재 환율이 다르므로 환율 변동 자체가 수익률에 반영됨 (의도된 것인지 확인 필요)
-  2. CASH 처리: quantity = amount, price = 1.0으로 처리 — CASH는 항상 수익률 0%
-  3. 환율 기본값: 조회 실패 시 1,450원 하드코딩 — 실제 환율과 차이 발생 가능
-  4. 현재가 조회 필드 우선순위: price_fetcher.py에서 last_price → regularMarketPrice → currentPrice → previousClose 순서로 조회하는데,
-  장중/장후에 따라 다른 값 반환 가능
-
-  어떤 부분에서 버그가 의심되는지 좀 더 구체적으로 알려주시면 해당 부분을 깊이 파고들 수 있습니다.
 - [ ] 단위 테스트 추가 (`tests/`)
 - [ ] 전체 테스트 실행 및 통과 확인 (`pytest tests/ -v`)
-- [ ] 전체 플로우 테스트 (`scripts/run_monthly.py`)
+- [ ] 전체 플로우 테스트 (`python run.py --month YYYY-MM`)
 - [ ] README.md 업데이트
 - [ ] AGENT.md 업데이트
 
-코드 수정 시 주의사항:
+코드 수정 시 주의:
 - [ ] import 경로가 올바른지 확인 (모듈 경로 사용)
 - [ ] 파일 이동 시 모든 참조 업데이트
-- [ ] 문서의 예제 명령어 경로 확인
-- [ ] 웹 대시보드에서 정상 작동하는지 확인
+- [ ] 웹 대시보드에서 정상 작동 확인
 
-### Phase 12: "전체 기간" 통합 기능 (All Months Aggregation)
+## 참고 자료
 
-- **요구사항**:
-  - 월별 선택 드롭다운에 "전체 기간" 옵션 추가
-  - 모든 월의 매수 내역을 합산하여 전체 투자 현황 조회
-  - CASH 항목 (일반적금, 주택청약 등)도 포함해야 함
-
-- **주요 구현**:
-
-  1. **월 선택 드롭다운** (`app.py:224-231`):
-     - "전체 기간" 옵션 추가
-     - 선택 시 모든 월 데이터 통합 조회
-
-  2. **계좌별 포트폴리오 - "전체 기간" 지원** (`data_loader.py`):
-     - **get_accounts()**: 계좌명 기준으로 통합 (account_id가 월마다 다름)
-       ```python
-       # 문제: 각 월마다 다른 account_id (11월: 60, 12월: 65)
-       # 해결: 계좌명으로 GROUP BY하여 통합
-       SELECT MAX(a.id), a.name, ...
-       FROM accounts a
-       GROUP BY a.name
-       ```
-     - **total_value 계산**: purchase_history(ETF/주식) + 최신 월 holdings(CASH)
-     - **get_account_holdings()**:
-       - purchase_history에서 ETF/주식 합산
-       - 최신 월 holdings에서 CASH 항목 가져오기
-       - 두 결과 병합
-
-  3. **전체 포트폴리오 - "전체 기간" 지원**:
-     - 최신 월 데이터 사용 (analyzed_holdings는 누적 스냅샷)
-
-  4. **월별 투자 비교**:
-     - "전체 기간" 제한 유지 (월별 비교 특성상)
-
-- **핵심 설계 결정**:
-  1. **옵션 B 채택**: 모든 월의 purchase_history 합산 (옵션 A: 최신 월만 vs 옵션 B: 전체 합산)
-  2. **CASH 처리**: purchase_history에는 CASH 없음 → 최신 월 holdings에서 추가
-  3. **계좌명 매칭**: account_id가 월마다 다르므로 계좌명(name)으로 매칭
-  4. **데이터 병합**: pd.concat()로 ETF/주식 + CASH 병합
-
-- **수정 파일**:
-  - `app.py`: "전체 기간" 옵션 추가
-  - `data_loader.py`: get_accounts(), get_account_holdings() 수정
-  - `account_portfolio.py`: "전체 기간" 지원
-  - `monthly_comparison.py`: 색상 표시 제거 (`:red[...]` 마크다운 → `+/-` 기호만)
-
-- **기타 개선사항**:
-  - 통합 보유 종목 Top 20: 티커 대신 종목명 우선 표시
-  - 수익률 텍스트: 마크다운 제거 (st.dataframe에서 작동 안 함)
-
-### Phase 13: 디렉터리 재구성 + 키보드 단축키 지원
-
-- **요구사항**:
-  - 파일들이 루트에 산재되어 있어 관리가 어려움
-  - 도메인별로 디렉터리를 분리하여 구조 개선
-  - 웹 대시보드에 키보드 단축키 추가로 사용성 향상
-
-- **주요 구현**:
-
-  1. **디렉터리 재구성** (기능별 분류):
-     - `core/`: 핵심 비즈니스 로직 (analyze_portfolio.py, evaluate_accumulative.py)
-     - `data/`: 데이터 레이어 (init_db.py, import_monthly_data.py, import_monthly_purchases.py, query_db.py)
-     - `visualization/`: 시각화 (visualize_portfolio.py)
-     - `scripts/`: 실행 스크립트 (run_monthly.py, run_all_months.py)
-     - `streamlit_app/`: 웹 대시보드 (기존 유지)
-
-  2. **import 경로 수정**:
-     - `scripts/run_monthly.py`: 모든 import를 모듈 경로로 변경
-       - `from data.init_db import init_database`
-       - `from core.analyze_portfolio import analyze_month_portfolio`
-       - `from visualization.visualize_portfolio import visualize_portfolio`
-     - `scripts/run_all_months.py`: project_root 경로 수정 (`parent.parent`), import 경로 수정
-
-  3. **키보드 단축키 지원** (`app.py`):
-     - **라이브러리**: `streamlit_hotkeys` 사용
-     - **페이지 이동**:
-       - `1`: 월별 투자 비교
-       - `2`: 계좌별 포트폴리오
-       - `3`: 전체 포트폴리오
-     - **월 선택**:
-       - `→`: 다음 월
-       - `←`: 이전 월
-       - `F`: '전체 기간' 선택
-     - **구현 방식**:
-       ```python
-       import streamlit_hotkeys as hotkeys
-
-       # 단축키 정의
-       hotkey_bindings = [
-           hotkeys.hk("page_monthly", "1"),
-           hotkeys.hk("month_prev", "ArrowLeft"),
-           ...
-       ]
-       hotkeys.activate(hotkey_bindings)
-
-       # 단축키 처리
-       if hotkeys.pressed("page_monthly"):
-           st.session_state.current_page = "월별 투자 비교"
-           st.query_params["page"] = "monthly"
-           st.rerun()
-       ```
-
-  4. **사이드바 네비게이션 개선**:
-     - 커스텀 버튼으로 현재 페이지 강조 (primary/secondary 타입)
-     - URL 쿼리 파라미터와 세션 상태 동기화
-     - 단축키 안내 문구 추가
-
-- **문서 업데이트**:
-  - `README.md`: 디렉터리 구조 및 명령어 경로 수정
-  - `AGENT.md`: 시스템 플로우 및 파일 경로 참조 수정
-  - 모든 예제 명령어를 새로운 경로로 업데이트
-    - `python run_monthly.py` → `python scripts/run_monthly.py`
-    - `python import_monthly_data.py` → `python -m data.import_monthly_data`
-
-- **의존성 추가**:
-  - `requirements.txt`에 `streamlit-hotkeys` 추가 필요
-
-- **개발 중 고려사항**:
-  - 파이썬 모듈 import 방식 사용 (`python -m module.file`)
-  - 기존 크론 작업이나 스크립트는 새로운 경로로 업데이트 필요
-  - DB 파일과 app.py는 루트에 유지 (엔트리포인트)
-
----
-
-**Last Updated**: 2026-02-12
-**Version**: 1.5.1
-**Maintainer**: AI Agent + Human
-
-**Changelog (v1.5.1)**:
-- **YAML 파일 내 purchase_day 지정 기능 추가**
-  - YAML 최상위에 `purchase_day: 18` 선택적 지정 가능
-  - 우선순위: YAML > CLI `--purchase-day` > 기본값 26
-  - 기존 YAML 파일 하위 호환성 유지 (키 없으면 기존 동작)
-
-**Changelog (v1.5.0)**:
-- **키보드 단축키 안정화** 🔥 **FIX!**
-  - `streamlit-hotkeys` 라이브러리의 조합 키/리더 키 버그로 인해 단일 키 방식으로 최종 변경
-  - `1,2,3`: 페이지 이동
-  - `←, →`: 이전/다음 월 선택
-  - `F`: '전체 기간' 선택
-  - 수차례의 디버깅을 통해 안정적인 단축키 동작 확보
-
-**Changelog (v1.4.0)**:
-- **디렉터리 재구성** ✨ **NEW!**
-  - 기능별로 디렉터리 분리 (core/, data/, visualization/, scripts/)
-  - import 경로 전면 수정
-  - 모듈 import 방식 사용 (`python -m module.file`)
-  - 문서 전체 업데이트 (경로 참조 수정)
-- **키보드 단축키 지원 (초기 버전)**
-  - streamlit_hotkeys 라이브러리 사용
-  - URL 쿼리 파라미터 기반 페이지 상태 관리
-- 코드 구조 개선:
-  - 관심사 분리 (Separation of Concerns)
-  - 유지보수성 향상
-  - 확장 가능한 아키텍처
-
-**Changelog (v1.3.1)**:
-- **"전체 기간" 통합 기능** ✨ **NEW!**
-  - 월 선택 드롭다운에 "전체 기간" 옵션 추가
-  - 모든 월의 매수 내역(purchase_history) 자동 합산
-  - CASH 항목 지원 (purchase_history + 최신 월 holdings 병합)
-  - 계좌명 기준 통합 (account_id 월별 불일치 해결)
-- 통합 보유 종목 Top 20: stock_name 우선 표시 (티커 대신)
-- 수익률 텍스트 표시 개선: 마크다운 제거 (`+/-` 기호만 사용)
-- 버그 수정: "전체 기간" 선택 시 CASH 항목 누락 문제 해결
-
-**Changelog (v1.3.0)**:
-- **Streamlit 웹 대시보드 구축** ✨ **NEW!**
-  - 인터랙티브 웹 기반 포트폴리오 분석 대시보드
-  - 3개 페이지: 월별 투자 비교, 계좌별 포트폴리오, 전체 포트폴리오
-  - Plotly 차트 사용 (Waterfall, Sunburst, Pie, Bar, Line)
-  - 캐싱 전략 (ETF 24시간, 월별 1시간)
-  - ETF 투시 토글 방식 (성능 최적화)
-  - 한국 주식 자동 종목명 표시
-  - 종목 검색 기능 (직접 + ETF 통한 간접 보유 통합)
-- 문서화 완료:
-  - streamlit_app/README.md: 사용 가이드
-  - streamlit_app/ARCHITECTURE.md: 아키텍처 문서
-  - designs/: UI 디자인 문서 (5개 파일)
-- requirements.txt 업데이트 (streamlit, plotly 추가)
-
-**Changelog (v1.2.0)**:
-- 개별 주식 지원 추가 (AMZN, GOOGL, TSLA 등)
-  - quoteType 필드로 ETF/개별주식 자동 구분
-  - 개별 주식은 100% 자기 보유 + 섹터 자동 조회
-- 적립식 투자 추적 시스템 구축
-  - purchase_history 테이블 추가 (수량 기반 추적)
-  - current_holdings_summary 뷰 추가
-  - import_monthly_purchases.py: 과거 주가 조회 및 수량 계산
-  - evaluate_accumulative.py: 현재가 기준 평가액 계산
-  - year_month 이중 형식 처리 (DB 조회용 vs 날짜 생성용)
-  - account_id 필수 저장 (계좌별 매수 이력 추적)
-- DB 마이그레이션 스크립트 추가 (migrate_add_purchase_history.py)
-- README.md 및 AGENT.md 문서화 완료
-
-**Changelog (v1.1.0)**:
-- TOP 30 → TOP 50 확장
-- 한국 주식 실제 종목명 표시 기능 추가
-- 다중 ETF 출처 추적 기능 추가
-- OTHER 항목 맨 마지막 표시 개선
-- 초장형 차트 레이아웃 (TOP 50 지원)
-- requirements.txt 추가
+- [yfinance](https://github.com/ranaroussi/yfinance): `etf.funds_data.top_holdings`, `etf.funds_data.sector_weightings`
+- [SQLite](https://www.sqlite.org/docs.html): CASE WHEN, GROUP BY, NULL handling
+- [Streamlit](https://docs.streamlit.io): 웹 프레임워크
+- [Plotly](https://plotly.com/python/): 인터랙티브 차트

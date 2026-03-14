@@ -6,7 +6,7 @@
 """
 import sqlite3
 import pytest
-from data.import_monthly_purchases import save_purchase, delete_purchase_history
+from data.importer import save_purchase, delete_purchase_history
 
 
 class TestSavePurchase:
