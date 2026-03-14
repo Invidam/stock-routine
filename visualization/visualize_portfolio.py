@@ -9,6 +9,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import pandas as pd
+from core.interest_calculator import calc_cash_current_value
 
 # 한글 폰트 설정
 plt.rcParams['font.family'] = 'AppleGothic'  # macOS
@@ -140,25 +141,40 @@ def get_cumulative_net_worth(up_to_month: str, db_path: str) -> dict:
         GROUP BY ticker, asset_type
     """, conn, params=(up_to_month,))
 
-    # 2. holdings에서 CASH 누적
-    cash_df = pd.read_sql_query("""
+    # 2. purchase_history에서 CASH 누적 (이자 계산용 개별 레코드)
+    cash_records = pd.read_sql_query("""
         SELECT
-            'CASH' as ticker,
-            'CASH' as asset_type,
-            0.0 as total_quantity,
-            SUM(h.amount) as invested,
-            NULL as avg_exchange_rate
-        FROM holdings h
-        JOIN accounts a ON h.account_id = a.id
-        JOIN months m ON a.month_id = m.id
-        WHERE h.asset_type = 'CASH' AND m.year_month <= ?
+            input_amount, purchase_date, interest_rate, interest_type
+        FROM purchase_history
+        WHERE asset_type = 'CASH' AND year_month <= ?
     """, conn, params=(up_to_month,))
 
     conn.close()
 
-    # 3. 전체 holdings 합치기
-    if not cash_df.empty and cash_df['invested'].iloc[0] is not None:
-        holdings_df = pd.concat([holdings_df, cash_df], ignore_index=True)
+    # CASH 이자 반영 평가액 계산
+    cash_invested = 0
+    cash_value = 0.0
+    if not cash_records.empty:
+        cash_invested = int(cash_records['input_amount'].sum())
+        for _, rec in cash_records.iterrows():
+            rate = rec['interest_rate'] if pd.notna(rec['interest_rate']) else None
+            itype = rec['interest_type'] if pd.notna(rec['interest_type']) else 'simple'
+            cash_value += calc_cash_current_value(
+                principal=int(rec['input_amount']),
+                annual_rate=rate,
+                purchase_date=rec['purchase_date'],
+                interest_type=itype,
+            )
+
+    if cash_invested > 0:
+        cash_row = pd.DataFrame([{
+            'ticker': 'CASH',
+            'asset_type': 'CASH',
+            'total_quantity': 0.0,
+            'invested': cash_invested,
+            'avg_exchange_rate': None,
+        }])
+        holdings_df = pd.concat([holdings_df, cash_row], ignore_index=True)
 
     if holdings_df.empty:
         return {
@@ -185,8 +201,8 @@ def get_cumulative_net_worth(up_to_month: str, db_path: str) -> dict:
         invested = row['invested']
 
         if asset_type == 'CASH' or ticker == 'CASH':
-            # CASH는 그대로 현재가치 = 투자금액
-            holdings_df.at[idx, 'current_value'] = invested
+            # CASH는 이자 반영 평가액 사용
+            holdings_df.at[idx, 'current_value'] = cash_value if cash_value > 0 else invested
         else:
             try:
                 # yfinance로 현재가 조회
@@ -491,17 +507,15 @@ def create_asset_trend_chart(db_path: str, output_path: str, months: int = 6):
 
     invested_df = pd.read_sql_query(invested_query, conn)
 
-    # 2. CASH 추가 (holdings)
+    # 2. CASH 추가 (purchase_history, 이자 반영)
     cash_query = """
         SELECT
-            m.year_month,
-            SUM(h.amount) as cash_amount
-        FROM holdings h
-        JOIN accounts a ON h.account_id = a.id
-        JOIN months m ON a.month_id = m.id
-        WHERE h.asset_type = 'CASH'
-        GROUP BY m.year_month
-        ORDER BY m.year_month
+            year_month,
+            SUM(input_amount) as cash_amount
+        FROM purchase_history
+        WHERE asset_type = 'CASH'
+        GROUP BY year_month
+        ORDER BY year_month
     """
 
     cash_df = pd.read_sql_query(cash_query, conn)

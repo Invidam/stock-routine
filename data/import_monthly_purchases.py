@@ -209,7 +209,9 @@ def save_purchase(
     input_amount: int,
     account_name: Optional[str],
     note: Optional[str],
-    db_path: str
+    db_path: str,
+    interest_rate: Optional[float] = None,
+    interest_type: Optional[str] = None,
 ):
     """purchase_history 테이블에 저장"""
     conn = sqlite3.connect(db_path)
@@ -233,8 +235,9 @@ def save_purchase(
             INSERT INTO purchase_history
             (ticker, asset_type, year_month, purchase_date,
              quantity, input_amount, price_at_purchase,
-             currency, exchange_rate, account_id, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             currency, exchange_rate, account_id, note,
+             interest_rate, interest_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ticker,
             asset_type,
@@ -246,7 +249,9 @@ def save_purchase(
             calc_result['currency'],
             calc_result['exchange_rate'],
             account_id,
-            note
+            note,
+            interest_rate,
+            interest_type,
         ))
 
         conn.commit()
@@ -326,7 +331,9 @@ def import_monthly_purchases(yaml_path: str, db_path: str = "portfolio.db", purc
                 'ticker': holding.get('ticker_mapping'),
                 'name': holding.get('name'),
                 'amount': holding.get('amount'),
-                'asset_type': asset_type
+                'asset_type': asset_type,
+                'interest_rate': holding.get('interest_rate'),
+                'interest_type': holding.get('interest_type', 'simple'),
             })
 
     if not all_purchases:
@@ -381,7 +388,9 @@ def import_monthly_purchases(yaml_path: str, db_path: str = "portfolio.db", purc
                 input_amount=amount,
                 account_name=account_name,
                 note=None,
-                db_path=db_path
+                db_path=db_path,
+                interest_rate=purchase.get('interest_rate'),
+                interest_type=purchase.get('interest_type'),
             )
 
             success_count += 1

@@ -109,11 +109,14 @@ def render_holdings_tab(selected_month: str, account: dict):
 
     if not df_cash.empty:
         st.markdown("**💵 현금성 자산**")
-        df_cash['금액'] = df_cash['투자원금'].apply(lambda x: f"{int(x):,}원")
+        df_cash['투자원금'] = df_cash['투자원금'].apply(lambda x: f"{int(x):,}원")
+        df_cash['평가금액'] = df_cash['평가금액'].apply(lambda x: f"{int(x):,}원")
+        df_cash['수익금액'] = df_cash['수익금액'].apply(lambda x: f"{int(x):+,}원")
+        df_cash['수익률(%)'] = df_cash['수익률(%)'].apply(lambda x: f"{x:+.2f}%")
         df_cash['비중'] = df_cash['ratio'].apply(lambda x: f"{x:.1f}%")
 
         st.dataframe(
-            df_cash[['종목명', '금액', '비중']],
+            df_cash[['종목명', '투자원금', '평가금액', '수익금액', '수익률(%)', '비중']],
             use_container_width=True,
             hide_index=True
         )

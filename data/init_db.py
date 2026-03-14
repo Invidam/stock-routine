@@ -120,6 +120,8 @@ def init_database(db_path: str = "portfolio.db"):
                 currency TEXT DEFAULT 'USD',
                 exchange_rate REAL,
                 account_id INTEGER,
+                interest_rate REAL,
+                interest_type TEXT DEFAULT 'simple',
                 note TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
@@ -201,6 +203,32 @@ def init_database(db_path: str = "portfolio.db"):
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_analysis_metadata_month
             ON analysis_metadata(month_id)
+        """)
+
+        # 마이그레이션: 기존 purchase_history에 interest_rate, interest_type 컬럼 추가
+        try:
+            cursor.execute("ALTER TABLE purchase_history ADD COLUMN interest_rate REAL")
+        except sqlite3.OperationalError:
+            pass  # 이미 존재
+        try:
+            cursor.execute("ALTER TABLE purchase_history ADD COLUMN interest_type TEXT DEFAULT 'simple'")
+        except sqlite3.OperationalError:
+            pass  # 이미 존재
+
+        # 백필: 기존 CASH purchase_history에 holdings의 interest_rate 매칭
+        # ticker_mapping 또는 name으로 매칭 시도
+        cursor.execute("""
+            UPDATE purchase_history
+            SET interest_rate = (
+                SELECT h.interest_rate
+                FROM holdings h
+                WHERE h.account_id = purchase_history.account_id
+                  AND (h.ticker_mapping = purchase_history.ticker OR h.name = purchase_history.ticker)
+                  AND h.asset_type = 'CASH'
+                  AND h.interest_rate IS NOT NULL
+                LIMIT 1
+            )
+            WHERE asset_type = 'CASH' AND interest_rate IS NULL
         """)
 
         # 변경사항 저장

@@ -476,6 +476,107 @@ current_holdings_summary (뷰: 종목별 보유 수량 집계) [NEW]
 - 미국 주식/ETF: USD → KRW 환산
 - 반환: `현재가(KRW)`
 
+## 📈 수익률 계산 상세
+
+### 핵심 공식
+
+모든 모듈에서 동일한 단순 수익률(Simple Return) 공식을 사용:
+
+```
+수익률(%) = (평가액 - 투자액) / 투자액 × 100
+평가액 = 보유수량 × 현재가(KRW)
+```
+
+### 수익률 계산 파이프라인
+
+```
+YAML(투자액)
+  ↓ import_monthly_purchases.py
+과거 주가 조회 → 수량 계산 (투자액 / 주당가격KRW) → purchase_history 저장
+  ↓ evaluate_accumulative.py 또는 data_loader.py
+DB에서 수량·투자액 조회 → 현재가 조회 → 평가액 산출 → 수익률 계산
+```
+
+### 수익률 계산 지점 (6곳)
+
+| 파일 | 함수 | 용도 |
+|---|---|---|
+| `core/evaluate_accumulative.py` | `evaluate_holdings()` | CLI 적립식 평가 |
+| `streamlit_app/data_loader.py` | `get_monthly_summary()` | 월별 요약 |
+| `streamlit_app/data_loader.py` | `get_account_holdings()` | 계좌별 종목 |
+| `streamlit_app/data_loader.py` | `get_total_top_holdings()` | 통합 포트폴리오 Top 20 |
+| `streamlit_app/data_loader.py` | `get_monthly_holdings_comparison()` | 월별 비교 |
+| `streamlit_app/utils/price_fetcher.py` | `calculate_profit_rate()` | 유틸 함수 |
+
+### 현재가 조회 방식 차이
+
+| 모듈 | 함수 | 반환값 | 환율 처리 |
+|---|---|---|---|
+| `evaluate_accumulative` | `get_current_price(ticker)` | **KRW** (환율 적용 완료) | 내부에서 `USD × 환율` 적용 |
+| `price_fetcher` | `get_current_price(ticker)` | **원시 가격** (USD/KRW 그대로) | 호출자가 별도 환율 적용 |
+
+### ⚠️ 알려진 불일치 사항
+
+1. **환율 기본값 차이**
+   - `evaluate_accumulative`: 기본값 **1,450원**
+   - `data_loader`: 기본값 **1,400원**
+   - 환율 조회 실패 시 두 모듈의 수익률이 ~3.4% 차이 발생
+
+2. **현재가 조회 실패 시 동작 차이**
+   - `evaluate_accumulative`: 해당 종목을 결과에서 **제외**
+   - `data_loader`: 원금을 평가액으로 사용 (**수익률 0%**)
+   - 같은 데이터에서 서로 다른 전체 수익률이 산출될 수 있음
+
+3. **account_id NULL 레코드**
+   - `purchase_history`에 `account_id`가 NULL인 레코드가 있으면 JOIN 쿼리에서 누락됨
+   - `evaluate_accumulative`는 account JOIN 없이 직접 조회하므로 영향 없음
+   - `data_loader`는 accounts JOIN을 사용하므로 해당 레코드 누락
+
+## 🧪 테스트
+
+### 실행 방법
+
+```bash
+# 전체 테스트
+.venv/bin/python -m pytest tests/ -v
+
+# 특정 파일만
+.venv/bin/python -m pytest tests/test_profit_rate.py -v
+
+# 특정 클래스만
+.venv/bin/python -m pytest tests/test_consistency.py::TestExchangeRateConsistency -v
+```
+
+### 테스트 구조
+
+```
+tests/
+├── conftest.py                  # 공통 픽스처 (인메모리 DB, yfinance mock)
+├── test_profit_rate.py          # 수익률 공식 (엣지 케이스 포함)
+├── test_calculate_quantity.py   # 투자액→수량 변환, 환율, 폴백
+├── test_portfolio_value.py      # 포트폴리오 평가액 (CASH 이자 반영)
+├── test_evaluate_holdings.py    # E2E 수익률 계산 (DB→현재가→수익률)
+├── test_monthly_summary.py      # 월별 요약, 빈 DB
+├── test_current_price.py        # 현재가 조회 (2개 모듈 차이 검증)
+├── test_db_aggregation.py       # DB 집계, NULL account_id 영향
+└── test_consistency.py          # 모듈 간 수익률 일관성 검증
+```
+
+### 주요 픽스처 (conftest.py)
+
+| 픽스처 | 설명 |
+|---|---|
+| `initialized_db` | 빈 스키마만 생성된 DB |
+| `populated_db` | 2개월(2025-01, 2025-02), 2개 계좌(ISA, 연금저축), 미국/한국 주식 + CASH |
+| `mock_yfinance` | yfinance.Ticker mock (SPY=610, QQQ=520, KODEX200=36000, KRW=X=1430) |
+| `mock_yf_download` | yfinance.download mock (일괄 조회) |
+
+### 테스트 작성 시 주의
+
+- 외부 API(yfinance) 호출은 반드시 mock 처리
+- `data_loader.py`의 함수들은 `st.cache_data` 데코레이터 적용 → `__wrapped__`로 원본 함수 호출
+- `data_loader`에서 `get_current_price`, `get_multiple_prices`는 함수 내부 import → mock 경로는 `streamlit_app.utils.price_fetcher`
+
 ## 🚨 주의사항
 
 ### yfinance API 제한
@@ -868,6 +969,92 @@ python visualize_portfolio.py --month 2025-12
 - [ ] DB 마이그레이션 스크립트 작성 (필요 시)
 - [ ] 핵심 로직 추가 (`core/` 또는 `data/`)
 - [ ] 테스트 데이터 (YAML) 준비
+⏺ 수익률 계산 로직 검토 결과              
+                                                                                                                                           
+  핵심 공식 (모든 곳에서 동일)
+                                                                                                                                           
+  수익률 = (평가액 - 투자액) / 투자액 × 100                                               
+  평가액 = 보유수량 × 현재가(원화)                                                                                                         
+                                                                                                                                           
+  이 공식은 **단순 수익률(Simple Return)**이며, 6개 지점에서 일관되게 사용됩니다.                                                          
+                                                                                                                                           
+  수익률 계산 파이프라인                                                                                                                   
+
+  YAML(투자액) → 과거주가 조회 → 수량 계산(투자액/주가) → DB 저장
+                                                            ↓
+                수익률 표시 ← 손익 계산 ← 현재가 조회 ← DB에서 수량·투자액 조회
+
+  수익률 계산이 존재하는 6개 지점
+
+  ┌──────────────────────────────────────────────┬─────────────────┐
+  │                     파일                     │      용도       │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ core/evaluate_accumulative.py:107-109        │ CLI 적립식 평가 │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:221-222         │ 월별 요약       │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:614-619         │ 계좌별 종목     │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:885-887         │ 통합 포트폴리오 │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:1284-1286       │ 월별 비교       │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/utils/price_fetcher.py:116-118 │ 유틸 함수       │
+  └──────────────────────────────────────────────┴─────────────────┘
+
+  잠재적 이슈 포인트
+
+  1. 환율 처리 불일치 가능성: 매수 시점 환율과 현재 환율이 다르므로 환율 변동 자체가 수익률에 반영됨 (의도된 것인지 확인 필요)
+  2. CASH 처리: quantity = amount, price = 1.0으로 처리 — CASH는 항상 수익률 0%
+  3. 환율 기본값: 조회 실패 시 1,450원 하드코딩 — 실제 환율과 차이 발생 가능
+  4. 현재가 조회 필드 우선순위: price_fetcher.py에서 last_price → regularMarketPrice → currentPrice → previousClose 순서로 조회하는데,
+  장중/장후에 따라 다른 값 반환 가능
+
+  어떤 부분에서 버그가 의심되는지 좀 더 구체적으로 알려주시면 해당 부분을 깊이 파고들 수 있습니다.
+⏺ 수익률 계산 로직 검토 결과              
+                                                                                                                                           
+  핵심 공식 (모든 곳에서 동일)
+                                                                                                                                           
+  수익률 = (평가액 - 투자액) / 투자액 × 100                                               
+  평가액 = 보유수량 × 현재가(원화)                                                                                                         
+                                                                                                                                           
+  이 공식은 **단순 수익률(Simple Return)**이며, 6개 지점에서 일관되게 사용됩니다.                                                          
+                                                                                                                                           
+  수익률 계산 파이프라인                                                                                                                   
+
+  YAML(투자액) → 과거주가 조회 → 수량 계산(투자액/주가) → DB 저장
+                                                            ↓
+                수익률 표시 ← 손익 계산 ← 현재가 조회 ← DB에서 수량·투자액 조회
+
+  수익률 계산이 존재하는 6개 지점
+
+  ┌──────────────────────────────────────────────┬─────────────────┐
+  │                     파일                     │      용도       │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ core/evaluate_accumulative.py:107-109        │ CLI 적립식 평가 │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:221-222         │ 월별 요약       │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:614-619         │ 계좌별 종목     │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:885-887         │ 통합 포트폴리오 │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/data_loader.py:1284-1286       │ 월별 비교       │
+  ├──────────────────────────────────────────────┼─────────────────┤
+  │ streamlit_app/utils/price_fetcher.py:116-118 │ 유틸 함수       │
+  └──────────────────────────────────────────────┴─────────────────┘
+
+  잠재적 이슈 포인트
+
+  1. 환율 처리 불일치 가능성: 매수 시점 환율과 현재 환율이 다르므로 환율 변동 자체가 수익률에 반영됨 (의도된 것인지 확인 필요)
+  2. CASH 처리: quantity = amount, price = 1.0으로 처리 — CASH는 항상 수익률 0%
+  3. 환율 기본값: 조회 실패 시 1,450원 하드코딩 — 실제 환율과 차이 발생 가능
+  4. 현재가 조회 필드 우선순위: price_fetcher.py에서 last_price → regularMarketPrice → currentPrice → previousClose 순서로 조회하는데,
+  장중/장후에 따라 다른 값 반환 가능
+
+  어떤 부분에서 버그가 의심되는지 좀 더 구체적으로 알려주시면 해당 부분을 깊이 파고들 수 있습니다.
+- [ ] 단위 테스트 추가 (`tests/`)
+- [ ] 전체 테스트 실행 및 통과 확인 (`pytest tests/ -v`)
 - [ ] 전체 플로우 테스트 (`scripts/run_monthly.py`)
 - [ ] README.md 업데이트
 - [ ] AGENT.md 업데이트

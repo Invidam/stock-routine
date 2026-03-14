@@ -56,6 +56,7 @@ git status  # monthly/*.yaml이 Untracked files에 없어야 함
 - **실시간 ETF 분석**: yfinance를 통한 ETF 내부 구성 종목 및 섹터 분석
 - **개별 주식 지원**: AMZN, GOOGL, TSLA 등 개별 종목 자동 감지 및 분석
 - **적립식 투자 추적**: 월별 투자 금액 → 수량 자동 계산 → 현재가 기준 평가
+- **적금 수익률 계산**: 현금성 자산(적금, 청약)의 이자 반영 평가액 자동 계산 (단리/복리 지원)
 - **환율 자동 적용**: 미국 ETF/주식의 원화 환산 자동 계산
 
 ### 2. 상세 분석 리포트
@@ -90,7 +91,8 @@ git status  # monthly/*.yaml이 Untracked files에 없어야 함
 stock-routine/
 ├── core/                              # 핵심 비즈니스 로직
 │   ├── analyze_portfolio.py           # 포트폴리오 분석 (핵심)
-│   └── evaluate_accumulative.py       # 적립식 투자 평가 (수량 × 현재가)
+│   ├── evaluate_accumulative.py       # 적립식 투자 평가 (수량 × 현재가)
+│   └── interest_calculator.py         # 적금 이자 계산 (단리/복리)
 ├── data/                              # 데이터 레이어
 │   ├── init_db.py                     # DB 초기화
 │   ├── import_monthly_data.py         # YAML → DB 임포트 (계좌/보유 항목)
@@ -165,6 +167,8 @@ stock-routine/
   - `exchange_rate`: 환율 (USD 종목만)
   - `account_id`: 계좌 ID (FK)
   - `year_month`: 귀속 월 (예: 2025-11-purchase)
+  - `interest_rate`: 연이율 (CASH만 해당, 예: 0.035 = 3.5%)
+  - `interest_type`: 이자 계산 방식 (`simple`=단리(기본값), `compound`=복리)
 
 ### current_holdings_summary 뷰
 - purchase_history를 종목별로 집계한 뷰
@@ -218,10 +222,11 @@ accounts:
         asset_type: "BOND"
 
       - name: "일반적금"
-        ticker_mapping: "CASH"
+        ticker_mapping: "일반적금"
         amount: 300000
         asset_type: "CASH"
         interest_rate: 0.077  # 연 7.7%
+        interest_type: "simple"  # 단리(기본값) 또는 compound(복리)
 ```
 
 자세한 YAML 형식은 `monthly/README.md` 참고
@@ -362,7 +367,7 @@ accounts:
         asset_type: "STOCK"
 ```
 
-**중요**: CASH 자산은 수량 개념이 없어 자동으로 제외됨
+**중요**: CASH 자산은 주가 조회 없이 `quantity = amount, price = 1.0`으로 저장되며, `interest_rate` 설정 시 이자 반영 수익률이 자동 계산됨
 
 #### 사용 예시
 ```bash
@@ -383,7 +388,48 @@ python -m core.evaluate_accumulative
 # ...
 ```
 
-### 2. 개별 주식 지원 (Individual Stocks)
+### 2. 적금 수익률 계산 (Deposit Interest)
+
+CASH 자산(적금, 주택청약 등)에 이자율을 설정하면, 각 납입건별 경과 기간에 따라 이자를 자동 계산합니다.
+
+#### 이자 계산 방식
+
+- **단리 (simple, 기본값)**: `이자 = 원금 × 연이율 × (경과월수 / 12)`
+- **복리 (compound)**: `이자 = 원금 × ((1 + 월이율)^경과월수 - 1)`
+
+#### YAML 설정
+
+```yaml
+- name: "일반적금"
+  ticker_mapping: "일반적금"   # 적금 이름으로 설정
+  amount: 300000
+  asset_type: "CASH"
+  interest_rate: 0.035         # 연 3.5%
+  interest_type: "simple"      # 단리 (기본값, 생략 가능)
+
+- name: "주택청약종합저축"
+  ticker_mapping: "주택청약종합저축"
+  amount: 50000
+  asset_type: "CASH"
+  interest_rate: 0.023         # 연 2.3%
+  interest_type: "compound"    # 복리
+```
+
+#### 적용 범위
+
+- **CLI 평가** (`evaluate_accumulative`): 적금별 이자 및 수익률 표시
+- **Streamlit 대시보드**: 계좌별/통합 포트폴리오에서 이자 반영 평가액 표시
+- **시각화**: 차트에서 CASH 평가액에 이자 반영
+
+#### 계산 예시
+
+3개월간 매월 30만원을 연 3.5% 단리 적금에 납입한 경우:
+- 1차 납입 (3개월 전): 300,000 × 3.5% × 3/12 = 2,625원
+- 2차 납입 (2개월 전): 300,000 × 3.5% × 2/12 = 1,750원
+- 3차 납입 (1개월 전): 300,000 × 3.5% × 1/12 = 875원
+- **총 이자: 5,250원** / 총 투자: 900,000원 / 평가액: 905,250원
+
+### 3. 개별 주식 지원 (Individual Stocks)
 
 #### 자동 감지
 - `yfinance`의 `quoteType` 필드로 ETF와 개별 주식 자동 구분
@@ -400,30 +446,30 @@ python -m core.evaluate_accumulative
 - TSLA (Tesla Inc)
 - 기타 모든 개별 주식
 
-### 3. 자산 유형 (asset_type)
+### 4. 자산 유형 (asset_type)
 
 - `STOCK`: 주식형 ETF 또는 개별 주식 (yfinance로 holdings/sectors 분석)
 - `BOND`: 채권형 ETF (yfinance 시도, 실패 시 Fixed Income으로 처리)
-- `CASH`: 현금성 자산 (yfinance 조회 없이 Cash & Equivalents로 처리)
+- `CASH`: 현금성 자산 (yfinance 조회 없이 Cash & Equivalents로 처리, 이자 반영 수익률 계산)
 
-### 4. 티커 매핑
+### 5. 티커 매핑
 
 한국 ETF → 미국 대응 ETF 매핑으로 분석 정확도 향상:
 - `KODEX 코스피 100` → `EWY` (iShares MSCI South Korea ETF)
 
-### 5. 기타 종목 (OTHER)
+### 6. 기타 종목 (OTHER)
 
 yfinance의 `top_holdings`는 상위 10개만 제공하므로, 나머지 종목을 "OTHER"로 자동 추가하여 원금과 일치하도록 보정
 - **표시 위치**: 금액이 많더라도 항상 목록 맨 마지막에 표시 (별도 섹션으로 구분)
 - **출처 추적**: 어떤 ETF에서 발생한 기타 종목인지 표시 (예: SPY, QQQ)
 
-### 6. 한국 주식 표시
+### 7. 한국 주식 표시
 
 - **자동 감지**: `.KS` 확장자를 가진 주식은 한국 주식으로 자동 인식
 - **실제 종목명 표시**: 티커 대신 실제 회사명 표시 (예: `005930.KS` → `삼성전자 (005930.KS)`)
 - **다중 ETF 추적**: 여러 ETF에 포함된 종목은 출처 표시 (예: `AAPL [from: SPY,QQQ]`)
 
-### 7. 환율 자동 계산
+### 8. 환율 자동 계산
 
 - `yfinance`에서 `KRW=X` 티커로 최신 환율 조회
 - 미국 ETF/개별 주식 holdings의 원화 환산 자동 적용
@@ -496,6 +542,7 @@ python scripts/run_monthly.py --month 2025-12 --yaml monthly/2025-11-purchase.ya
 
 - `fee`: 계좌 운영수수료 (기본값: 0.0)
 - `interest_rate`: 이자율 (CASH만 해당, 예: 0.077 = 7.7%)
+- `interest_type`: 이자 계산 방식 (CASH만 해당, `simple`=단리(기본값), `compound`=복리)
 - `target_ratio`: 자동 계산됨 (입력 불필요)
 
 ## 🐛 트러블슈팅
@@ -620,6 +667,7 @@ stock-routine/monthly/                        ← 프로젝트에서 접근
 - [x] 웹 대시보드 (Streamlit) ✅ **완료!**
 - [x] 키보드 단축키 지원 ✅ **완료!**
 - [x] "전체 기간" 통합 기능 ✅ **완료!**
+- [x] 적금 수익률 계산 (단리/복리) ✅ **완료!**
 - [ ] 텔레그램 봇 연동 (차트 이미지 자동 전송)
 - [ ] 리밸런싱 추천 알고리즘
 - [ ] 포트폴리오 백테스팅 기능
