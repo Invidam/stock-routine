@@ -362,16 +362,27 @@ def get_accounts(year_month: str, db_path: str = DB_PATH) -> List[Dict]:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # "전체 기간"인 경우
+    # "전체 기간"인 경우: 가장 최근 월의 broker/type/fee를 사용
     if year_month == "전체 기간":
         cursor.execute("""
             SELECT
                 MAX(a.id) as id,
                 a.name,
-                MAX(a.type) as type,
-                MAX(a.broker) as broker,
-                MAX(a.fee) as fee
+                latest.type,
+                latest.broker,
+                latest.fee
             FROM accounts a
+            JOIN (
+                SELECT a2.name, a2.type, a2.broker, a2.fee
+                FROM accounts a2
+                JOIN months m ON a2.month_id = m.id
+                WHERE m.year_month = (
+                    SELECT MAX(m2.year_month) FROM months m2
+                    JOIN accounts a3 ON a3.month_id = m2.id
+                    WHERE a3.name = a2.name
+                )
+                GROUP BY a2.name
+            ) latest ON latest.name = a.name
             GROUP BY a.name
             ORDER BY a.name
         """)
@@ -535,26 +546,22 @@ def get_account_holdings(year_month: str, account_id: int, db_path: str = DB_PAT
         """
         df = pd.read_sql_query(query_ph, conn, params=(account_id,))
 
-        # CASH 추가 (최신 월 holdings에서)
-        latest_month = get_latest_month(db_path)
-        latest_month_id = get_month_id(latest_month, db_path) if latest_month else None
-        if latest_month_id:
-            query_cash = """
-                SELECT
-                    h.name as 종목명,
-                    h.ticker_mapping as 티커,
-                    h.asset_type as 자산유형,
-                    0.0 as 보유수량,
-                    h.amount as 투자원금,
-                    0 as is_other
-                FROM holdings h
-                JOIN accounts a ON h.account_id = a.id
-                WHERE a.name = (SELECT name FROM accounts WHERE id = ?)
-                  AND a.month_id = ?
-                  AND h.asset_type = 'CASH'
-            """
-            df_cash = pd.read_sql_query(query_cash, conn, params=(account_id, latest_month_id))
-            df = pd.concat([df, df_cash], ignore_index=True)
+        # CASH 추가 (purchase_history에서 누적 합산)
+        query_cash = """
+            SELECT
+                ph.ticker as 티커,
+                ph.ticker as 종목명,
+                'CASH' as 자산유형,
+                0.0 as 보유수량,
+                SUM(ph.input_amount) as 투자원금,
+                0 as is_other
+            FROM purchase_history ph
+            JOIN accounts a ON ph.account_id = a.id
+            WHERE a.name = (SELECT name FROM accounts WHERE id = ?) AND ph.asset_type = 'CASH'
+            GROUP BY ph.ticker
+        """
+        df_cash = pd.read_sql_query(query_cash, conn, params=(account_id,))
+        df = pd.concat([df, df_cash], ignore_index=True)
     else:
         # 특정 월: holdings + purchase_history 병합
         month_id = get_month_id(year_month, db_path)
@@ -562,7 +569,7 @@ def get_account_holdings(year_month: str, account_id: int, db_path: str = DB_PAT
             conn.close()
             return pd.DataFrame()
 
-        # STOCK/BOND: purchase_history에서 수량 조회
+        # STOCK/BOND: purchase_history에서 해당 월의 수량만 조회
         query_ph = """
             SELECT
                 h.name as 종목명,
@@ -578,10 +585,11 @@ def get_account_holdings(year_month: str, account_id: int, db_path: str = DB_PAT
             LEFT JOIN purchase_history ph ON h.account_id = ph.account_id
                 AND h.ticker_mapping = ph.ticker
                 AND h.asset_type = ph.asset_type
+                AND ph.year_month = ?
             WHERE h.account_id = ? AND h.asset_type IN ('STOCK', 'BOND')
             GROUP BY h.id, h.name, h.ticker_mapping, h.asset_type, h.amount
         """
-        df_stock_bond = pd.read_sql_query(query_ph, conn, params=(account_id,))
+        df_stock_bond = pd.read_sql_query(query_ph, conn, params=(year_month, account_id))
 
         # CASH: holdings에서만 조회
         query_cash = """
@@ -629,25 +637,47 @@ def get_account_holdings(year_month: str, account_id: int, db_path: str = DB_PAT
     cash_rows = df[df['자산유형'] == 'CASH']
     if not cash_rows.empty:
         conn2 = sqlite3.connect(db_path)
+        is_all_period = year_month == "전체 기간"
         for _, crow in cash_rows.iterrows():
             cash_name = crow['종목명']
-            # purchase_history에서 ticker 또는 name으로 매칭
-            cash_info = pd.read_sql_query("""
-                SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
-                FROM purchase_history ph
-                WHERE ph.asset_type = 'CASH' AND ph.ticker = ?
-            """, conn2, params=(cash_name,))
-            if cash_info.empty:
-                # ticker_mapping이 다른 경우 holdings name으로 재시도
+            # purchase_history에서 ticker 또는 name으로 매칭 (특정 월이면 해당 월만)
+            if is_all_period:
                 cash_info = pd.read_sql_query("""
                     SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
                     FROM purchase_history ph
                     JOIN accounts a ON ph.account_id = a.id
-                    JOIN holdings h ON h.account_id = a.id
-                        AND (h.ticker_mapping = ph.ticker OR h.name = ph.ticker)
-                        AND h.asset_type = 'CASH'
-                    WHERE h.name = ? AND ph.asset_type = 'CASH'
-                """, conn2, params=(cash_name,))
+                    WHERE ph.asset_type = 'CASH' AND ph.ticker = ? AND a.id = ?
+                """, conn2, params=(cash_name, account_id))
+            else:
+                cash_info = pd.read_sql_query("""
+                    SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
+                    FROM purchase_history ph
+                    WHERE ph.asset_type = 'CASH' AND ph.ticker = ?
+                      AND ph.account_id = ? AND ph.year_month = ?
+                """, conn2, params=(cash_name, account_id, year_month))
+            if cash_info.empty:
+                # ticker_mapping이 다른 경우 holdings name으로 재시도
+                if is_all_period:
+                    cash_info = pd.read_sql_query("""
+                        SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
+                        FROM purchase_history ph
+                        JOIN accounts a ON ph.account_id = a.id
+                        JOIN holdings h ON h.account_id = a.id
+                            AND (h.ticker_mapping = ph.ticker OR h.name = ph.ticker)
+                            AND h.asset_type = 'CASH'
+                        WHERE h.name = ? AND ph.asset_type = 'CASH' AND a.id = ?
+                    """, conn2, params=(cash_name, account_id))
+                else:
+                    cash_info = pd.read_sql_query("""
+                        SELECT ph.input_amount, ph.purchase_date, ph.interest_rate, ph.interest_type
+                        FROM purchase_history ph
+                        JOIN accounts a ON ph.account_id = a.id
+                        JOIN holdings h ON h.account_id = a.id
+                            AND (h.ticker_mapping = ph.ticker OR h.name = ph.ticker)
+                            AND h.asset_type = 'CASH'
+                        WHERE h.name = ? AND ph.asset_type = 'CASH'
+                          AND a.id = ? AND ph.year_month = ?
+                    """, conn2, params=(cash_name, account_id, year_month))
             if not cash_info.empty:
                 total_val = 0.0
                 for _, rec in cash_info.iterrows():

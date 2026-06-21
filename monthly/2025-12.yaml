@@ -1,0 +1,70 @@
+# 2025-12-purchase.yaml
+purchase_day: 26
+accounts:
+  - name: "안전/저축"
+    type: "일반"
+    broker: "미지정"
+    fee: 0.0
+    holdings:
+      - name: "1982 전설의 적금"
+        ticker_mapping: "일반적금"
+        amount: 300000
+        asset_type: "CASH"
+        interest_rate: 0.077
+        interest_type: "simple"
+      - name: "주택청약종합저축"
+        ticker_mapping: "주택청약"
+        amount: 50000
+        asset_type: "CASH"
+        interest_rate: 0.023
+        interest_type: "simple"
+
+  - name: "투자 (절세)"
+    type: "ISA"
+    broker: "신한투자증권"
+    fee: 0.0015
+    holdings:
+      - name: "ACE 미국 S&P 500"
+        ticker_mapping: "SPY"
+        amount: 400000
+        asset_type: "STOCK"
+      - name: "ACE 미국 나스닥 100"
+        ticker_mapping: "QQQ"
+        amount: 300000
+        asset_type: "STOCK"
+      - name: "KODEX 코스피 100"
+        ticker_mapping: "EWY"
+        amount: 200000
+        asset_type: "STOCK"
+      - name: "iShares 0-3 Month Treasury Bond ETF"
+        ticker_mapping: "SGOV"
+        amount: 200000
+        asset_type: "BOND"
+
+  - name: "노후 준비 (IRP)"
+    type: "IRP"
+    broker: "한국투자증권"
+    fee: 0.0015
+    holdings:
+      - name: "ACE 미국 S&P 500"
+        ticker_mapping: "SPY"
+        amount: 60000
+        asset_type: "STOCK"
+      - name: "iShares 0-3 Month Treasury Bond ETF"
+        ticker_mapping: "SGOV"
+        amount: 50000
+        asset_type: "BOND"
+
+  - name: "노후 준비 (연금저축)"
+    type: "연금저축"
+    broker: "한국투자증권"
+    fee: 0.0015
+    holdings:
+      - name: "ACE 미국 S&P 500"
+        ticker_mapping: "SPY"
+        amount: 60000
+        asset_type: "STOCK"
+      - name: "iShares 0-3 Month Treasury Bond ETF"
+        ticker_mapping: "SGOV"
+        amount: 50000
+        asset_type: "BOND"
